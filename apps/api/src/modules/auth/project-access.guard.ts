@@ -34,8 +34,9 @@ export class ProjectAccessGuard implements CanActivate {
 
     const req = context.switchToHttp().getRequest<Request>();
     const userId = req.session?.userId;
-    const rawProjectId = req.params?.id;
-    const projectId = typeof rawProjectId === 'string' ? rawProjectId : undefined;
+    // /projects/:id/... と /projects/:projectId/<nested>/... の両方に対応
+    const rawId = req.params?.projectId ?? req.params?.id;
+    const projectId = typeof rawId === 'string' ? rawId : undefined;
 
     if (!userId || !projectId) {
       await this.recordDenied(req, userId ?? null, projectId ?? null, mode, 'missing_context');
