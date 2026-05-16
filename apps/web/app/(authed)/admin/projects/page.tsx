@@ -1,6 +1,7 @@
 'use client';
 
 import type { Project } from '@kgk/schemas';
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api/client';
@@ -104,6 +105,12 @@ export default function AdminProjectsPage(): React.ReactElement {
                     {formatAmount(p.contractAmount)}
                   </td>
                   <td className="px-4 py-2 text-right">
+                    <Link
+                      href={`/admin/projects/${p.id}`}
+                      className="inline-flex h-8 items-center rounded-md px-3 text-sm hover:bg-muted"
+                    >
+                      詳細
+                    </Link>
                     <Button variant="ghost" size="sm" onClick={() => openEdit(p)}>
                       編集
                     </Button>
