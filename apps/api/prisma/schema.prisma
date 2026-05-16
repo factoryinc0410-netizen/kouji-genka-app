@@ -1,5 +1,9 @@
 // kouji-genka Prisma schema
-// 詳細なエンティティ定義は W2 以降で追加していく (REQUIREMENTS.md §7)
+// REQUIREMENTS.md §7 と CLAUDE.md の規約に準拠
+// - 主キー: UUID v7 (Prisma 5.14+ の uuid(7))
+// - 監査ログのみ bigserial (件数大・索引効率)
+// - タイムスタンプ: timestamptz (UTC 保存・JST 表示は app 側)
+// - 命名: テーブル名は複数形 snake_case、enum は Prisma enum
 
 generator client {
   provider        = "prisma-client-js"
@@ -9,4 +13,116 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ===================================================================
+// Enums
+// ===================================================================
+
+/// REQUIREMENTS §10.2 の 5 ロール
+enum RoleCode {
+  admin // 管理者: 全データ・全機能、ユーザ管理
+  planner // 予算編成: 担当工事の予算編集、出来高承認
+  field // 現場: 担当工事の日報・出面入力
+  accounting // 経理: 全工事の支払・入金、帳票出力
+  viewer // 閲覧: 担当工事の閲覧のみ
+}
+
+/// REQUIREMENTS §4.6 の監査対象
+enum AuditAction {
+  create
+  update
+  delete
+  login
+  login_failed
+  logout
+  export
+  permission_change
+}
+
+// ===================================================================
+// 認証・認可
+// ===================================================================
+
+model User {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  email        String    @unique @db.VarChar(255)
+  /// Argon2id によるハッシュ。SSO のみのユーザは null
+  passwordHash String?   @map("password_hash") @db.Text
+  name         String    @db.VarChar(100)
+  roleId       String    @map("role_id") @db.Uuid
+  isActive     Boolean   @default(true) @map("is_active")
+  /// TOTP の秘密鍵 (任意有効化)
+  mfaSecret    String?   @map("mfa_secret") @db.VarChar(255)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// 論理削除
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  role               Role                    @relation(fields: [roleId], references: [id])
+  projectPermissions UserProjectPermission[]
+  auditLogs          AuditLog[]
+
+  @@index([roleId])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  code        RoleCode @unique
+  name        String   @db.VarChar(50)
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users User[]
+
+  @@map("roles")
+}
+
+/// REQUIREMENTS §3.1 F1.5: ユーザ × 工事 の権限
+/// projects テーブルは W5 で追加されるため、ここでは FK 制約なしの uuid 参照
+model UserProjectPermission {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  canView   Boolean  @default(true) @map("can_view")
+  canEdit   Boolean  @default(false) @map("can_edit")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([projectId])
+  @@map("user_project_permissions")
+}
+
+// ===================================================================
+// 監査ログ (append-only 想定。7 年保持は運用で担保)
+// ===================================================================
+
+model AuditLog {
+  id         BigInt      @id @default(autoincrement())
+  /// 認証失敗時は null (ユーザが特定できないため)
+  userId     String?     @map("user_id") @db.Uuid
+  occurredAt DateTime    @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  action     AuditAction
+  entityType String?     @map("entity_type") @db.VarChar(100)
+  /// UUID も bigint 由来 ID も入りうるので text
+  entityId   String?     @map("entity_id") @db.VarChar(100)
+  before     Json?       @db.JsonB
+  after      Json?       @db.JsonB
+  ipAddress  String?     @map("ip_address") @db.Inet
+  userAgent  String?     @map("user_agent") @db.Text
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([occurredAt])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@map("audit_logs")
 }
