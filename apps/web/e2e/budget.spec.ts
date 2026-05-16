@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { expect, type Page, test } from '@playwright/test';
 
 const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'admin@kgk.local';
@@ -36,6 +37,34 @@ async function waitBudgetIdle(page: Page): Promise<void> {
   await page
     .locator(`${tableSel}[data-busy="false"]`)
     .waitFor({ state: 'attached', timeout: 10_000 });
+}
+
+/**
+ * T26 workflow テスト用の DB 直接リセット。
+ *
+ * superseded → draft の遷移は API では存在しない (業務上は不可逆) ため、
+ * テスト後始末では docker exec で psql を叩いて 1) v2 以降をハード削除、
+ * 2) v1 を draft に戻す、を行う。container_name は infra/docker-compose.yml
+ * で `kgk-postgres` に pin 済 (CI/local 共通)。
+ */
+function resetBudgetToSeed(projectCode: string): void {
+  const sql = `
+    DELETE FROM budget_items WHERE budget_id IN (
+      SELECT b.id FROM budgets b
+      JOIN projects p ON p.id = b.project_id
+      WHERE p.code = '${projectCode}' AND b.version > 1
+    );
+    DELETE FROM budgets WHERE project_id = (SELECT id FROM projects WHERE code = '${projectCode}') AND version > 1;
+    UPDATE budgets
+      SET status = 'draft',
+          submitted_by_id = NULL,
+          submitted_at = NULL,
+          approved_by_id = NULL,
+          approved_at = NULL,
+          lock_version = lock_version + 1
+      WHERE project_id = (SELECT id FROM projects WHERE code = '${projectCode}') AND version = 1;
+  `.replace(/\s+/g, ' ');
+  execSync(`docker exec kgk-postgres psql -U kgk -d kgk -c "${sql}"`, { stdio: 'pipe' });
 }
 
 test.describe
@@ -323,5 +352,101 @@ test.describe
         },
       });
       expect(revertRes.ok()).toBeTruthy();
+    });
+
+    test('予算ワークフロー: 申請 → 承認 → 改定 → 新版表示 (T26)', async ({ page }) => {
+      page.on('dialog', (d) => d.accept()); // 申請/承認/改定 すべての confirm を受諾
+
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // 初期 draft: 「申請する」+「+ 科目を追加」が表示されている
+      await expect(page.getByRole('button', { name: '申請する' })).toBeVisible();
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toBeVisible();
+
+      // --- 申請 ---
+      await page.getByRole('button', { name: '申請する' }).click();
+      // pending_approval に遷移 → 「承認する」「差戻す」が出る
+      await expect(page.getByRole('button', { name: '承認する' })).toBeVisible({
+        timeout: 10_000,
+      });
+      await expect(page.getByRole('button', { name: '差戻す' })).toBeVisible();
+      // 編集は無効化される (status≠draft なので「+ 科目を追加」非表示)
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toHaveCount(0);
+
+      // --- 承認 ---
+      await page.getByRole('button', { name: '承認する' }).click();
+      // approved → 「改定して新版を作成」が出る
+      await expect(page.getByRole('button', { name: '改定して新版を作成' })).toBeVisible({
+        timeout: 10_000,
+      });
+      // 承認後も編集系は無効
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toHaveCount(0);
+
+      // --- 改定 ---
+      await page.getByRole('button', { name: '改定して新版を作成' }).click();
+      // 新 draft (v2) に切替 → 「申請する」が再び出現
+      await expect(page.getByRole('button', { name: '申請する' })).toBeVisible({
+        timeout: 15_000,
+      });
+      // 「改定して新版を作成」は消える (新版は draft なので)
+      await expect(page.getByRole('button', { name: '改定して新版を作成' })).toHaveCount(0);
+      // version 切替ボタン群に v1 (superseded) と v2 (draft) が並ぶ
+      await expect(page.getByRole('button', { name: /v1.*superseded/ })).toBeVisible();
+      await expect(page.getByRole('button', { name: /v2.*draft/ })).toBeVisible();
+      // totalAmount は v1 と同じ (items コピー成功)
+      await expect(page.getByText('2,237,100 円')).toBeVisible();
+      // 編集系 (「+ 科目を追加」) も復活
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toBeVisible();
+
+      // --- 旧版 (v1, superseded) を表示 → 読取専用 ---
+      await page.getByRole('button', { name: /v1.*superseded/ }).click();
+      // ワークフロー操作も編集操作も出ない
+      await expect(page.getByRole('button', { name: '申請する' })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '改定して新版を作成' })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toHaveCount(0);
+
+      // --- 後始末: v2 をハード削除、v1 を draft に戻す ---
+      resetBudgetToSeed('2026-001');
+    });
+
+    test('予算ワークフロー: 申請 → 差戻し → draft 復帰 (T26)', async ({ page }) => {
+      page.on('dialog', (d) => d.accept());
+
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // 初期 draft
+      await expect(page.getByRole('button', { name: '申請する' })).toBeVisible();
+
+      // --- 申請 ---
+      await page.getByRole('button', { name: '申請する' }).click();
+      await expect(page.getByRole('button', { name: '差戻す' })).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toHaveCount(0);
+
+      // --- 差戻し: ダイアログでコメント入力 → 保存 ---
+      await page.getByRole('button', { name: '差戻す' }).click();
+      const rejectDialog = page.getByRole('dialog');
+      await expect(rejectDialog).toBeVisible({ timeout: 5_000 });
+      await rejectDialog
+        .locator('#br-comment')
+        .fill('単価の根拠資料を添付してから再申請してください');
+      await rejectDialog.getByRole('button', { name: '差戻す' }).click();
+      await expect(rejectDialog).toBeHidden({ timeout: 5_000 });
+
+      // draft に戻り、「申請する」「+ 科目を追加」が復活
+      await expect(page.getByRole('button', { name: '申請する' })).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toBeVisible();
+
+      // --- 後始末: lockVersion bump 分も含めて draft seed 値に戻す ---
+      resetBudgetToSeed('2026-001');
     });
   });

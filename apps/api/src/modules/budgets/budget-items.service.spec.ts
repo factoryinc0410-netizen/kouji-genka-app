@@ -46,7 +46,9 @@ function makeTxRunner(prisma: PrismaService, overrides: Record<string, unknown>)
 function build() {
   const prisma = {
     $transaction: vi.fn(),
-    budget: { findFirst: vi.fn().mockResolvedValue({ id: budgetId }) },
+    // ensureBudgetEditable で status を見るので draft を返す。
+    // 非 draft をテストする場合は各テストで mockResolvedValueOnce で上書きする。
+    budget: { findFirst: vi.fn().mockResolvedValue({ id: budgetId, status: 'draft' }) },
     budgetItem: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
@@ -463,4 +465,57 @@ describe('BudgetItemsService.softDelete (楽観ロック + 子持ち拒否)', ()
       expect.objectContaining({ action: 'delete', entityType: 'budget_items' }),
     );
   });
+});
+
+// =====================================================================
+// T26: 編集系メソッドの draft ガード (BUDGET_NOT_EDITABLE)
+// 承認済 / 申請中 / 旧版 (superseded) の予算に対する明細編集が拒否されることを保証
+// =====================================================================
+describe('BudgetItemsService draft ガード', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  for (const status of ['pending_approval', 'approved', 'superseded'] as const) {
+    it(`create: status=${status} なら 422 BUDGET_NOT_EDITABLE`, async () => {
+      const { service, prisma } = build();
+      vi.mocked(prisma.budget.findFirst).mockResolvedValueOnce({
+        id: budgetId,
+        status,
+      } as never);
+      await expect(
+        service.create(projectId, budgetId, { kind: 'section', name: 'X' }, actorId, ctx),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it(`update: status=${status} なら 422`, async () => {
+      const { service, prisma } = build();
+      vi.mocked(prisma.budget.findFirst).mockResolvedValueOnce({
+        id: budgetId,
+        status,
+      } as never);
+      await expect(
+        service.update(
+          projectId,
+          budgetId,
+          itemId,
+          { lockVersion: 0, quantity: '1' },
+          actorId,
+          ctx,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it(`softDelete: status=${status} なら 422`, async () => {
+      const { service, prisma } = build();
+      vi.mocked(prisma.budget.findFirst).mockResolvedValueOnce({
+        id: budgetId,
+        status,
+      } as never);
+      await expect(
+        service.softDelete(projectId, budgetId, itemId, 0, actorId, ctx),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  }
 });

@@ -86,4 +86,58 @@ export function deleteBudgetItem(
   });
 }
 
+// ---- T26: Workflow (申請 / 承認 / 差戻し / 改定) ----
+
+/** 申請: draft → pending_approval */
+export function submitBudget(
+  projectId: string,
+  budgetId: string,
+  lockVersion: number,
+): Promise<BudgetResponse> {
+  return apiFetch<BudgetResponse>(`${root(projectId)}/${budgetId}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ lockVersion }),
+  });
+}
+
+/** 承認: pending_approval → approved (admin 限定) */
+export function approveBudget(
+  projectId: string,
+  budgetId: string,
+  lockVersion: number,
+): Promise<BudgetResponse> {
+  return apiFetch<BudgetResponse>(`${root(projectId)}/${budgetId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ lockVersion }),
+  });
+}
+
+/** 差戻し: pending_approval → draft (admin 限定、コメント任意) */
+export function rejectBudget(
+  projectId: string,
+  budgetId: string,
+  lockVersion: number,
+  comment?: string,
+): Promise<BudgetResponse> {
+  return apiFetch<BudgetResponse>(`${root(projectId)}/${budgetId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ lockVersion, comment }),
+  });
+}
+
+/**
+ * 改定: approved → superseded + 新 draft (v+1)。
+ * レスポンスは **新 draft** budget。呼び出し元はこの id に切替表示すること。
+ */
+export function reviseBudget(
+  projectId: string,
+  budgetId: string,
+  lockVersion: number,
+): Promise<BudgetResponse> {
+  return apiFetch<BudgetResponse>(`${root(projectId)}/${budgetId}/revise`, {
+    method: 'POST',
+    body: JSON.stringify({ lockVersion }),
+  });
+}
+
 export type { Budget };

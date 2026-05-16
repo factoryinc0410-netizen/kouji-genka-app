@@ -104,6 +104,7 @@ export default function ProjectBudgetPage({
           projectId={projectId}
           editable={currentBudget.status === 'draft'}
           onRefresh={() => refresh(currentBudget.id)}
+          onSwitchBudget={(newId) => refresh(newId)}
         />
       ) : (
         <h1 className="text-2xl font-semibold">

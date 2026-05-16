@@ -72,7 +72,7 @@ export class BudgetItemsService {
     actorId: string,
     ctx: AuditContext,
   ): Promise<BudgetItemDto> {
-    await this.ensureBudget(projectId, budgetId);
+    await this.ensureBudgetEditable(projectId, budgetId);
 
     try {
       const created = await this.prisma.$transaction(async (tx) => {
@@ -182,7 +182,7 @@ export class BudgetItemsService {
     actorId: string,
     ctx: AuditContext,
   ): Promise<BudgetItemDto> {
-    await this.ensureBudget(projectId, budgetId);
+    await this.ensureBudgetEditable(projectId, budgetId);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const before = await tx.budgetItem.findFirst({
@@ -315,7 +315,7 @@ export class BudgetItemsService {
     actorId: string,
     ctx: AuditContext,
   ): Promise<void> {
-    await this.ensureBudget(projectId, budgetId);
+    await this.ensureBudgetEditable(projectId, budgetId);
 
     const before = await this.prisma.$transaction(async (tx) => {
       const item = await tx.budgetItem.findFirst({
@@ -363,7 +363,29 @@ export class BudgetItemsService {
   // internal
   // -----------------------------------------------------------------
 
-  /** 指定 budget が project に属し、論理削除されていないかを検証 */
+  /**
+   * 指定 budget が project に属し、論理削除されていないかを検証 + draft ガード。
+   *
+   * **承認済 / 申請中 / 旧版 (superseded) の予算に対する明細編集はすべて 422 で拒否**。
+   * これにより T26 ワークフロー後にデータが不変であることを保証する。
+   */
+  private async ensureBudgetEditable(projectId: string, budgetId: string): Promise<void> {
+    const budget = await this.prisma.budget.findFirst({
+      where: { id: budgetId, projectId, deletedAt: null },
+      select: { id: true, status: true },
+    });
+    if (!budget) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: '予算が見つかりません' });
+    }
+    if (budget.status !== 'draft') {
+      throw new UnprocessableEntityException({
+        code: 'BUDGET_NOT_EDITABLE',
+        message: 'draft 以外の予算 (申請中/承認済/旧版) は明細を編集できません',
+      });
+    }
+  }
+
+  /** 読み取り系: 存在確認のみ (status 問わず閲覧可) */
   private async ensureBudget(projectId: string, budgetId: string): Promise<void> {
     const exists = await this.prisma.budget.findFirst({
       where: { id: budgetId, projectId, deletedAt: null },

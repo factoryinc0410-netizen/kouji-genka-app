@@ -73,17 +73,48 @@ export const UpdateBudgetRequestSchema = z
     /** 楽観ロック: 必ず現状の lockVersion を返送すること */
     lockVersion: z.number().int().nonnegative(),
     title: z.string().trim().max(200).nullable().optional(),
-    /**
-     * status 遷移は T26 ワークフロー (申請/承認) 専用ルート用。
-     * 通常編集 (title/notes) と同時に変更する用途は想定しない。
-     */
-    status: BudgetStatusSchema.optional(),
     notes: z.string().trim().max(5000).nullable().optional(),
   })
   .refine((v) => Object.entries(v).some(([k, x]) => k !== 'lockVersion' && x !== undefined), {
     message: '少なくとも 1 つの更新フィールドを指定してください',
   });
 export type UpdateBudgetRequest = z.infer<typeof UpdateBudgetRequestSchema>;
+
+// ===================================================================
+// Workflow (T26): 申請 / 承認 / 差戻し / 改定
+// status 遷移は通常編集 (PATCH) と分離した専用 endpoint で扱う。
+// ===================================================================
+
+/** POST /budgets/:id/submit  (draft → pending_approval) */
+export const SubmitBudgetRequestSchema = z.object({
+  lockVersion: z.number().int().nonnegative(),
+});
+export type SubmitBudgetRequest = z.infer<typeof SubmitBudgetRequestSchema>;
+
+/** POST /budgets/:id/approve  (pending_approval → approved) */
+export const ApproveBudgetRequestSchema = z.object({
+  lockVersion: z.number().int().nonnegative(),
+});
+export type ApproveBudgetRequest = z.infer<typeof ApproveBudgetRequestSchema>;
+
+/**
+ * POST /budgets/:id/reject  (pending_approval → draft)
+ * - comment: 差戻し理由 (任意、audit log の after.reason に保存)
+ */
+export const RejectBudgetRequestSchema = z.object({
+  lockVersion: z.number().int().nonnegative(),
+  comment: z.string().trim().max(1000).optional(),
+});
+export type RejectBudgetRequest = z.infer<typeof RejectBudgetRequestSchema>;
+
+/**
+ * POST /budgets/:id/revise  (approved → superseded + 新 draft v+1)
+ * 成功時のレスポンスは新 draft 予算 ({ budget }) を返す。
+ */
+export const ReviseBudgetRequestSchema = z.object({
+  lockVersion: z.number().int().nonnegative(),
+});
+export type ReviseBudgetRequest = z.infer<typeof ReviseBudgetRequestSchema>;
 
 export const ListBudgetsResponseSchema = z.object({
   items: z.array(BudgetSchema),

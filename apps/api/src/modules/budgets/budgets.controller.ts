@@ -1,10 +1,18 @@
 import {
+  type ApproveBudgetRequest,
+  ApproveBudgetRequestSchema,
   type CreateBudgetItemRequest,
   CreateBudgetItemRequestSchema,
   type CreateBudgetRequest,
   CreateBudgetRequestSchema,
   type DeleteBudgetItemRequest,
   DeleteBudgetItemRequestSchema,
+  type RejectBudgetRequest,
+  RejectBudgetRequestSchema,
+  type ReviseBudgetRequest,
+  ReviseBudgetRequestSchema,
+  type SubmitBudgetRequest,
+  SubmitBudgetRequestSchema,
   type UpdateBudgetItemRequest,
   UpdateBudgetItemRequestSchema,
   type UpdateBudgetRequest,
@@ -115,6 +123,98 @@ export class BudgetsController {
     @Req() req: Request,
   ) {
     await this.budgets.softDelete(projectId, budgetId, actorId, contextFromReq(req));
+  }
+
+  // =================================================================
+  // Workflow (T26): 申請 / 承認 / 差戻し / 改定
+  // 動作別 POST endpoint で業務意図を URL / 監査に明示する。
+  // =================================================================
+
+  /** 申請: draft → pending_approval (edit 権限のあるユーザが自工事の予算を申請) */
+  @Post(':budgetId/submit')
+  @RequireProjectAccess('edit')
+  async submit(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+    @Body(new ZodValidationPipe(SubmitBudgetRequestSchema)) body: SubmitBudgetRequest,
+    @CurrentUserId() actorId: string,
+    @Req() req: Request,
+  ) {
+    const budget = await this.budgets.submit(
+      projectId,
+      budgetId,
+      body.lockVersion,
+      actorId,
+      contextFromReq(req),
+    );
+    return { budget };
+  }
+
+  /** 承認: pending_approval → approved (当面 admin 限定。将来 approver ロールを追加可能) */
+  @Post(':budgetId/approve')
+  @Roles('admin')
+  async approve(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+    @Body(new ZodValidationPipe(ApproveBudgetRequestSchema)) body: ApproveBudgetRequest,
+    @CurrentUserId() actorId: string,
+    @Req() req: Request,
+  ) {
+    const budget = await this.budgets.approve(
+      projectId,
+      budgetId,
+      body.lockVersion,
+      actorId,
+      contextFromReq(req),
+    );
+    return { budget };
+  }
+
+  /**
+   * 差戻し: pending_approval → draft (admin 限定)
+   * body.comment は audit log の after.reason に保存される (DB スキーマ不変)
+   */
+  @Post(':budgetId/reject')
+  @Roles('admin')
+  async reject(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+    @Body(new ZodValidationPipe(RejectBudgetRequestSchema)) body: RejectBudgetRequest,
+    @CurrentUserId() actorId: string,
+    @Req() req: Request,
+  ) {
+    const budget = await this.budgets.reject(
+      projectId,
+      budgetId,
+      body,
+      actorId,
+      contextFromReq(req),
+    );
+    return { budget };
+  }
+
+  /**
+   * 改定: approved → superseded + 新 draft (v+1) を作成。
+   * レスポンスは **新 draft** budget。フロントはこれに切替表示する。
+   */
+  @Post(':budgetId/revise')
+  @RequireProjectAccess('edit')
+  @HttpCode(HttpStatus.CREATED)
+  async revise(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+    @Body(new ZodValidationPipe(ReviseBudgetRequestSchema)) body: ReviseBudgetRequest,
+    @CurrentUserId() actorId: string,
+    @Req() req: Request,
+  ) {
+    const budget = await this.budgets.revise(
+      projectId,
+      budgetId,
+      body.lockVersion,
+      actorId,
+      contextFromReq(req),
+    );
+    return { budget };
   }
 }
 

@@ -197,8 +197,23 @@ describe('BudgetsService.update', () => {
     expect(prisma.budget.update).not.toHaveBeenCalled();
   });
 
-  it('status を pending_approval にすると submittedBy / submittedAt が設定される', async () => {
+  it('対象なしは NotFoundException', async () => {
     const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue(null);
+    await expect(
+      service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+// =====================================================================
+// T26: Workflow (submit / approve / reject / revise)
+// =====================================================================
+describe('BudgetsService.submit (draft → pending_approval)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('成功: status / submitter / submittedAt / lockVersion+1 をセット', async () => {
+    const { service, prisma, audit } = build();
     vi.mocked(prisma.budget.findFirst).mockResolvedValue(seedBudget as never);
     vi.mocked(prisma.budget.update).mockResolvedValue({
       ...seedBudget,
@@ -208,14 +223,10 @@ describe('BudgetsService.update', () => {
       lockVersion: 1,
     } as never);
 
-    await service.update(
-      projectId,
-      budgetId,
-      { lockVersion: 0, status: 'pending_approval' },
-      actorId,
-      ctx,
-    );
+    const dto = await service.submit(projectId, budgetId, 0, actorId, ctx);
 
+    expect(dto.status).toBe('pending_approval');
+    expect(dto.lockVersion).toBe(1);
     expect(prisma.budget.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -226,9 +237,43 @@ describe('BudgetsService.update', () => {
         }),
       }),
     );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'update',
+        entityType: 'budgets',
+        after: expect.objectContaining({ workflowAction: 'submit' }),
+      }),
+    );
   });
 
-  it('status を approved にすると approver / approvedAt が設定される (draft 以外でも status 変更は OK)', async () => {
+  it('draft 以外なら 422 INVALID_STATUS_TRANSITION', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue({
+      ...seedBudget,
+      status: 'approved',
+    } as never);
+    await expect(service.submit(projectId, budgetId, 0, actorId, ctx)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(prisma.budget.update).not.toHaveBeenCalled();
+  });
+
+  it('lockVersion 不一致なら 409', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue({
+      ...seedBudget,
+      lockVersion: 5,
+    } as never);
+    await expect(service.submit(projectId, budgetId, 0, actorId, ctx)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
+});
+
+describe('BudgetsService.approve (pending_approval → approved)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('成功: approver / approvedAt を設定', async () => {
     const { service, prisma } = build();
     vi.mocked(prisma.budget.findFirst).mockResolvedValue({
       ...seedBudget,
@@ -244,8 +289,8 @@ describe('BudgetsService.update', () => {
       lockVersion: 1,
     } as never);
 
-    await service.update(projectId, budgetId, { lockVersion: 0, status: 'approved' }, actorId, ctx);
-
+    const dto = await service.approve(projectId, budgetId, 0, actorId, ctx);
+    expect(dto.status).toBe('approved');
     expect(prisma.budget.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -257,12 +302,214 @@ describe('BudgetsService.update', () => {
     );
   });
 
-  it('対象なしは NotFoundException', async () => {
+  it('draft からは 422', async () => {
     const { service, prisma } = build();
-    vi.mocked(prisma.budget.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue(seedBudget as never);
+    await expect(service.approve(projectId, budgetId, 0, actorId, ctx)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+  });
+});
+
+describe('BudgetsService.reject (pending_approval → draft)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('成功: submittedBy / submittedAt をクリア、コメントが audit.after.reason に', async () => {
+    const { service, prisma, audit } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue({
+      ...seedBudget,
+      status: 'pending_approval',
+      submittedById: actorId,
+      submittedAt: new Date(),
+    } as never);
+    vi.mocked(prisma.budget.update).mockResolvedValue({
+      ...seedBudget,
+      status: 'draft',
+      submittedById: null,
+      submittedAt: null,
+      lockVersion: 1,
+    } as never);
+
+    await service.reject(
+      projectId,
+      budgetId,
+      { lockVersion: 0, comment: '単価の根拠を追記してください' },
+      actorId,
+      ctx,
+    );
+
+    expect(prisma.budget.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'draft',
+          submitter: { disconnect: true },
+          submittedAt: null,
+        }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'update',
+        after: expect.objectContaining({
+          workflowAction: 'reject',
+          reason: '単価の根拠を追記してください',
+        }),
+      }),
+    );
+  });
+
+  it('pending_approval 以外からは 422', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue(seedBudget as never);
     await expect(
-      service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
-    ).rejects.toBeInstanceOf(NotFoundException);
+      service.reject(projectId, budgetId, { lockVersion: 0 }, actorId, ctx),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});
+
+describe('BudgetsService.revise (approved → superseded + 新 draft v+1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function buildWithTx() {
+    // $transaction(callback) → callback(tx) 形式に対応するモック
+    const txBudget = {
+      findFirst: vi.fn(),
+      update: vi.fn(),
+      aggregate: vi.fn(),
+      create: vi.fn(),
+    };
+    const txBudgetItem = {
+      findMany: vi.fn(),
+      create: vi.fn(),
+    };
+    const tx = { budget: txBudget, budgetItem: txBudgetItem };
+    type Tx = typeof tx;
+    const prisma = {
+      $transaction: vi.fn(async (cb: (t: Tx) => unknown) => cb(tx)),
+    } as unknown as PrismaService;
+    const audit = { log: vi.fn().mockResolvedValue(undefined) } as unknown as AuditService;
+    return { service: new BudgetsService(prisma, audit), prisma, audit, tx };
+  }
+
+  it('成功: 旧 budget を superseded、新 draft を v+1 で作成、items を level 昇順で複製', async () => {
+    const { service, audit, tx } = buildWithTx();
+    const approvedBudget = {
+      ...seedBudget,
+      status: 'approved' as const,
+      approvedById: actorId,
+      approvedAt: new Date(),
+      lockVersion: 3,
+    };
+    const newId = '01900000-0000-7000-8000-00000000dddd';
+    tx.budget.findFirst.mockResolvedValue(approvedBudget);
+    tx.budget.update.mockResolvedValue({
+      ...approvedBudget,
+      status: 'superseded',
+      lockVersion: 4,
+    });
+    tx.budget.aggregate.mockResolvedValue({ _max: { version: 1 } });
+    tx.budget.create.mockResolvedValue({
+      ...seedBudget,
+      id: newId,
+      version: 2,
+      status: 'draft',
+      lockVersion: 0,
+      submittedById: null,
+      submittedAt: null,
+      approvedById: null,
+      approvedAt: null,
+    });
+    // 親→子の 2 件 (level=0, 1)
+    const parentItem = {
+      id: 'old-parent',
+      budgetId: budgetId,
+      parentId: null,
+      level: 0,
+      displayOrder: 1000,
+      kind: 'section',
+      code: '1',
+      name: '直接工事費',
+      spec: null,
+      unit: null,
+      costElement: null,
+      quantity: new Prisma.Decimal('0'),
+      unitPrice: new Prisma.Decimal('0'),
+      amount: new Prisma.Decimal('100'),
+      notes: null,
+      lockVersion: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: null,
+    };
+    const childItem = { ...parentItem, id: 'old-child', parentId: 'old-parent', level: 1 };
+    tx.budgetItem.findMany.mockResolvedValue([parentItem, childItem]);
+    tx.budgetItem.create
+      .mockResolvedValueOnce({ ...parentItem, id: 'new-parent', budgetId: newId })
+      .mockResolvedValueOnce({ ...childItem, id: 'new-child', budgetId: newId });
+
+    const dto = await service.revise(projectId, budgetId, 3, actorId, ctx);
+
+    expect(dto.id).toBe(newId);
+    expect(dto.status).toBe('draft');
+    expect(dto.version).toBe(2);
+    expect(dto.lockVersion).toBe(0);
+    // 旧 budget は superseded に
+    expect(tx.budget.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: budgetId },
+        data: expect.objectContaining({ status: 'superseded', lockVersion: 4 }),
+      }),
+    );
+    // 子要素の create で parentId が **新親 ID** に解決されている
+    expect(tx.budgetItem.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          budgetId: newId,
+          parentId: 'new-parent', // ← idMap で解決された新 ID
+          level: 1,
+          lockVersion: 0,
+        }),
+      }),
+    );
+    // audit log: update (旧) + create (新)
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'update',
+        entityId: budgetId,
+        after: expect.objectContaining({ workflowAction: 'revise' }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'create',
+        entityId: newId,
+        after: expect.objectContaining({
+          workflowAction: 'revise',
+          sourceBudgetId: budgetId,
+        }),
+      }),
+    );
+  });
+
+  it('approved 以外からは 422 INVALID_STATUS_TRANSITION', async () => {
+    const { service, tx } = buildWithTx();
+    tx.budget.findFirst.mockResolvedValue({ ...seedBudget, status: 'draft' });
+    await expect(service.revise(projectId, budgetId, 0, actorId, ctx)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+  });
+
+  it('lockVersion 不一致なら 409', async () => {
+    const { service, tx } = buildWithTx();
+    tx.budget.findFirst.mockResolvedValue({
+      ...seedBudget,
+      status: 'approved',
+      lockVersion: 5,
+    });
+    await expect(service.revise(projectId, budgetId, 3, actorId, ctx)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
   });
 });
 

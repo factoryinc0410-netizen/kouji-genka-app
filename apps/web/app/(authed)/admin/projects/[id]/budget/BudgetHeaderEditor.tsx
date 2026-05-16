@@ -8,6 +8,7 @@ import { updateBudget } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 import { formatAmount } from '@/lib/format';
 import { BudgetHeaderDialog } from './BudgetHeaderDialog';
+import { BudgetWorkflowActions } from './BudgetWorkflowActions';
 
 /**
  * Budget ページのヘッダ部 (title / version / status / 合計 / 備考プレビュー)。
@@ -23,6 +24,8 @@ interface Props {
   projectId: string;
   editable: boolean;
   onRefresh: () => Promise<void> | void;
+  /** 改定 (revise) 成功時に新 budget の id へ表示を切替えるためのコールバック */
+  onSwitchBudget: (newBudgetId: string) => Promise<void> | void;
 }
 
 export function BudgetHeaderEditor({
@@ -31,6 +34,7 @@ export function BudgetHeaderEditor({
   projectId,
   editable,
   onRefresh,
+  onSwitchBudget,
 }: Props): React.ReactElement {
   const toast = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -126,11 +130,19 @@ export function BudgetHeaderEditor({
           </p>
         </div>
 
-        <div className="text-right">
-          <div className="text-xs text-muted-foreground">合計</div>
-          <div className="text-xl font-semibold tabular-nums">
-            {formatAmount(budget.totalAmount)} 円
+        <div className="flex flex-col items-end gap-2">
+          <div className="text-right">
+            <div className="text-xs text-muted-foreground">合計</div>
+            <div className="text-xl font-semibold tabular-nums">
+              {formatAmount(budget.totalAmount)} 円
+            </div>
           </div>
+          <BudgetWorkflowActions
+            projectId={projectId}
+            budget={budget}
+            onRefresh={onRefresh}
+            onSwitchBudget={onSwitchBudget}
+          />
         </div>
       </div>
 
