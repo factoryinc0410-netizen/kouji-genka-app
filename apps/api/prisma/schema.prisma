@@ -41,6 +41,36 @@ enum AuditAction {
   access_denied
 }
 
+/// REQUIREMENTS §3.2 F2.2 / §7.2: 工事ステータス
+enum ProjectStatus {
+  bidding // 受注前
+  in_progress // 施工中
+  completed // 完工
+  billing // 請求中
+  closed // 完了
+}
+
+/// REQUIREMENTS §3.2 F2.5 / §7.2: 工事区分 (公共/民間)
+enum ProjectType {
+  public
+  private
+}
+
+/// REQUIREMENTS §3.2 F2.5 / §7.2: 構造種別 (土木/建築/改修)
+enum ConstructionType {
+  civil
+  building
+  renovation
+}
+
+/// REQUIREMENTS §3.13 F12.1: 取引区分
+enum CustomerType {
+  client // 施主・発注者
+  general // 元請
+  subcontractor // 外注
+  supplier // 仕入
+}
+
 // ===================================================================
 // 認証・認可
 // ===================================================================
@@ -61,9 +91,11 @@ model User {
   /// 論理削除
   deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  role               Role                    @relation(fields: [roleId], references: [id])
-  projectPermissions UserProjectPermission[]
-  auditLogs          AuditLog[]
+  role                 Role                    @relation(fields: [roleId], references: [id])
+  projectPermissions   UserProjectPermission[]
+  auditLogs            AuditLog[]
+  managedProjects      Project[]               @relation("ProjectManager")
+  projectStatusChanges ProjectStatusHistory[]  @relation("ProjectStatusChanger")
 
   @@index([roleId])
   @@index([deletedAt])
@@ -84,7 +116,7 @@ model Role {
 }
 
 /// REQUIREMENTS §3.1 F1.5: ユーザ × 工事 の権限
-/// projects テーブルは W5 で追加されるため、ここでは FK 制約なしの uuid 参照
+/// W3 で projects テーブルを追加し、project_id に FK 制約を付与
 model UserProjectPermission {
   id        String   @id @default(uuid(7)) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
@@ -94,7 +126,8 @@ model UserProjectPermission {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([userId, projectId])
   @@index([projectId])
@@ -126,4 +159,101 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([action])
   @@map("audit_logs")
+}
+
+// ===================================================================
+// 取引先・工事
+// ===================================================================
+
+/// REQUIREMENTS §3.13: 取引先マスタ
+/// code はユーザ決定により NOT NULL + UNIQUE (他システム連携キー)
+model Customer {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  /// 取引先コード (社内採番、他システム連携キーとして必須)
+  code          String       @unique @db.VarChar(50)
+  name          String       @db.VarChar(200)
+  nameKana      String?      @map("name_kana") @db.VarChar(200)
+  customerType  CustomerType @map("customer_type")
+  address       String?      @db.Text
+  phone         String?      @db.VarChar(50)
+  email         String?      @db.VarChar(255)
+  contactPerson String?      @map("contact_person") @db.VarChar(100)
+  /// 連絡事項・特殊な契約条件などのメモ
+  notes         String?      @db.Text
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// 論理削除
+  deletedAt     DateTime?    @map("deleted_at") @db.Timestamptz(6)
+
+  projects Project[]
+
+  @@index([customerType])
+  @@index([deletedAt])
+  @@map("customers")
+}
+
+/// REQUIREMENTS §3.2 / §7.2: 工事 (project)
+/// - contract_amount は numeric(15,0) 円単位、Prisma Client では Decimal、API は文字列で返却
+/// - status 変遷は project_status_history に記録
+/// - 削除は admin のみ (論理削除)、manager 本人でも不可
+model Project {
+  id               String           @id @default(uuid(7)) @db.Uuid
+  /// 工事番号 (例: 2026-001)、社内採番、UNIQUE
+  code             String           @unique @db.VarChar(50)
+  /// 件名
+  name             String           @db.VarChar(200)
+  customerId       String           @map("customer_id") @db.Uuid
+  /// 現場所在地
+  location         String?          @db.Text
+  /// 着工日
+  startDate        DateTime?        @map("start_date") @db.Date
+  /// 竣工予定日
+  endDate          DateTime?        @map("end_date") @db.Date
+  /// 実竣工日 (closed 移行時に確定する想定)
+  actualEndDate    DateTime?        @map("actual_end_date") @db.Date
+  /// 請負金額 (円、numeric(15,0))
+  contractAmount   Decimal          @default(0) @map("contract_amount") @db.Decimal(15, 0)
+  status           ProjectStatus    @default(bidding)
+  projectType      ProjectType      @default(private) @map("project_type")
+  constructionType ConstructionType @default(building) @map("construction_type")
+  /// 担当者 (現場代理人等)
+  managerUserId    String?          @map("manager_user_id") @db.Uuid
+  /// 備考・連絡事項
+  notes            String?          @db.Text
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// 論理削除
+  deletedAt        DateTime?        @map("deleted_at") @db.Timestamptz(6)
+
+  customer      Customer                @relation(fields: [customerId], references: [id])
+  manager       User?                   @relation("ProjectManager", fields: [managerUserId], references: [id], onDelete: SetNull)
+  permissions   UserProjectPermission[]
+  statusHistory ProjectStatusHistory[]
+
+  @@index([customerId])
+  @@index([managerUserId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("projects")
+}
+
+/// 工事ステータス変遷 (REQUIREMENTS §7.1 project_status_history)
+/// - 後戻り (closed → in_progress 等) を許容 (DB 制約なし、UI 側で警告)
+/// - bigserial PK (件数が増えるため)
+model ProjectStatusHistory {
+  id          BigInt         @id @default(autoincrement())
+  projectId   String         @map("project_id") @db.Uuid
+  /// 変更前ステータス (新規作成直後は null)
+  fromStatus  ProjectStatus? @map("from_status")
+  toStatus    ProjectStatus  @map("to_status")
+  changedById String         @map("changed_by_id") @db.Uuid
+  changedAt   DateTime       @default(now()) @map("changed_at") @db.Timestamptz(6)
+  reason      String?        @db.Text
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  changedBy User    @relation("ProjectStatusChanger", fields: [changedById], references: [id])
+
+  @@index([projectId])
+  @@index([changedAt])
+  @@map("project_status_history")
 }
