@@ -47,6 +47,7 @@ export default function AuthedLayout({
           <nav className="space-y-1 text-sm">
             <SidebarLink href="/projects">工事一覧</SidebarLink>
             <SidebarLink href="/admin/projects">工事管理</SidebarLink>
+            <SidebarLink href="/admin/customers">取引先管理</SidebarLink>
             <SidebarLink href="/admin/users">ユーザ管理</SidebarLink>
           </nav>
         </aside>

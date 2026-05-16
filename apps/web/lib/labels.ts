@@ -1,4 +1,11 @@
-import type { ConstructionType, ProjectStatus, ProjectType } from '@kgk/schemas';
+import type { ConstructionType, CustomerType, ProjectStatus, ProjectType } from '@kgk/schemas';
+
+export const CUSTOMER_TYPE_LABELS: Record<CustomerType, string> = {
+  client: '施主・発注者',
+  general: '元請',
+  subcontractor: '外注',
+  supplier: '仕入',
+};
 
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   bidding: '受注前',
