@@ -81,4 +81,51 @@ test.describe
       );
       expect(revertRes.ok()).toBeTruthy();
     });
+
+    test('行アクションメニューで「子要素として追加」→「削除」', async ({ page }) => {
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+
+      // 初期 totalAmount を覚えておく (= 2,237,100)
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // --- composite 「1-1 (土工事)」の行のアクションメニュー → 子要素として追加 ---
+      const compositeRow = page.locator('tr', { hasText: '土工事' }).first();
+      await compositeRow.getByRole('button', { name: '行アクション' }).click();
+      await page.getByRole('menuitem', { name: '子要素として追加' }).click();
+
+      // 「新規明細」行が追加される (デフォルト quantity=0 / unitPrice=0 で amount=0)
+      const newRow = page.locator('tr', { hasText: '新規明細' }).last();
+      await expect(newRow).toBeVisible({ timeout: 10_000 });
+      // 親の集計 (composite 1-1 / section 1 / totalAmount) は不変 (追加行が amount=0 のため)
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 5_000 });
+
+      // --- 数量と単価を入れて amount=1,000 → ロールアップで totalAmount が +1,000 ---
+      const newQty = newRow.locator('input').nth(0);
+      await newQty.click();
+      await newQty.fill('10');
+      await newQty.blur();
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 5_000 }); // 単価 0 なので 0
+      // 再度 row を取り直す (refetch で React key 維持されるが念のため)
+      const newRow2 = page.locator('tr', { hasText: '新規明細' }).last();
+      const newPrice = newRow2.locator('input').nth(1);
+      await newPrice.click();
+      await newPrice.fill('100');
+      await newPrice.blur();
+      // 10 * 100 = 1,000 が加算
+      await expect(page.getByText('2,238,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // --- 削除メニュー → 確認ダイアログ accept ---
+      page.on('dialog', (d) => d.accept());
+      const targetRow = page.locator('tr', { hasText: '新規明細' }).last();
+      await targetRow.getByRole('button', { name: '行アクション' }).click();
+      await page.getByRole('menuitem', { name: '削除' }).click();
+
+      // 元の合計に復元
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('tr', { hasText: '新規明細' })).toHaveCount(0);
+    });
   });

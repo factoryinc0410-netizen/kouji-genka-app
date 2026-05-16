@@ -136,8 +136,16 @@ export const UpdateBudgetItemRequestSchema = z
   .object({
     /** 楽観ロック: 必ず現状の lockVersion を返送すること */
     lockVersion: z.number().int().nonnegative(),
-    /** 兄弟内 reorder のみ。親付け替えは現状未対応 (MVP) */
+    /** 並び順 (同一 parent 内、または親付け替え時のドロップ位置) */
     displayOrder: z.number().int().nonnegative().optional(),
+    /**
+     * 親付け替え (Tree move):
+     * - string (UUID): 指定 parent (section/composite) の下に移動
+     * - null:          ルートに移動 (level=0)
+     * - undefined:     親変更しない
+     * level は API 側で新親に応じて再計算され、子孫の level も連鎖更新される。
+     */
+    parentId: z.string().uuid().nullable().optional(),
     code: z.string().trim().max(50).nullable().optional(),
     name: z.string().trim().min(1).max(200).optional(),
     spec: z.string().trim().max(2000).nullable().optional(),

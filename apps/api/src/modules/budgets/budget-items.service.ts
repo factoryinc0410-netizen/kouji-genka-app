@@ -162,12 +162,17 @@ export class BudgetItemsService {
    * 明細を更新する。楽観ロック必須。
    *
    * 流れ:
-   *   1) lockVersion チェック (Prisma updateMany with where 句で原子的に判定)
-   *   2) quantity/unitPrice が変わった場合、kind=detail なら amount を再計算
-   *   3) rollUp で親 → totalAmount を更新
-   *   4) audit_logs に before/after
-   *
-   * 親付け替え (parentId 変更) は MVP では未対応。tree.move は別エンドポイントで導入予定。
+   *   1) lockVersion チェック
+   *   2) parentId 変更 (tree move) の場合:
+   *      - 新親が同じ budget 内、削除されておらず、葉 (detail) でないことを検証
+   *      - 自分自身や子孫への移動 (= 循環) を拒否 (422 INVALID_PARENT)
+   *      - 自分の level を 新親.level + 1 (root の場合 0) に更新
+   *      - 子孫の level を 自分の新 level からの相対差分で連鎖更新
+   *   3) quantity/unitPrice が変わった場合、kind=detail なら amount を再計算
+   *   4) rollUp:
+   *      - 親変更があった場合は 旧親 → 新親 の順で 2 回
+   *      - そうでなく金額影響があった場合は 旧親で 1 回
+   *   5) audit_logs に before/after
    */
   async update(
     projectId: string,
@@ -187,7 +192,7 @@ export class BudgetItemsService {
         throw new NotFoundException({ code: 'NOT_FOUND', message: '明細が見つかりません' });
       }
 
-      // 楽観ロック検証 (与えられた lockVersion と DB のものが一致しなければ 409)
+      // 楽観ロック検証
       if (before.lockVersion !== input.lockVersion) {
         throw new ConflictException({
           code: 'BUDGET_ITEM_VERSION_MISMATCH',
@@ -205,6 +210,45 @@ export class BudgetItemsService {
       if (input.costElement !== undefined) data.costElement = input.costElement;
       if (input.notes !== undefined) data.notes = input.notes;
 
+      // ------- 親付け替え (tree move) -------
+      const parentChanging =
+        input.parentId !== undefined && (input.parentId ?? null) !== before.parentId;
+      let newLevel = before.level;
+      if (parentChanging) {
+        if (input.parentId === null) {
+          newLevel = 0;
+          data.parent = { disconnect: true };
+        } else {
+          // 同じ budget 内、削除されておらず、detail (葉) でないこと
+          const newParent = await tx.budgetItem.findFirst({
+            where: { id: input.parentId, budgetId, deletedAt: null },
+            select: { id: true, level: true, kind: true },
+          });
+          if (!newParent) {
+            throw new UnprocessableEntityException({
+              code: 'RELATED_ENTITY_NOT_FOUND',
+              message: '指定された親明細が見つかりません',
+            });
+          }
+          if (newParent.kind === 'detail') {
+            throw new UnprocessableEntityException({
+              code: 'INVALID_PARENT_KIND',
+              message: '葉ノード (detail) の下には子を追加できません',
+            });
+          }
+          // 自分自身 / 子孫への移動禁止 (循環防止)
+          if (newParent.id === before.id || (await isDescendant(tx, before.id, newParent.id))) {
+            throw new UnprocessableEntityException({
+              code: 'INVALID_PARENT',
+              message: '自身または子孫の下には移動できません',
+            });
+          }
+          newLevel = newParent.level + 1;
+          data.parent = { connect: { id: newParent.id } };
+        }
+        data.level = newLevel;
+      }
+
       // 数量・単価が来たら amount 再計算 (葉 detail のみ)
       const nextQty =
         input.quantity !== undefined ? new Prisma.Decimal(input.quantity) : before.quantity;
@@ -219,19 +263,26 @@ export class BudgetItemsService {
         data.amount = calcLeafAmount(nextQty, nextPrice);
       }
 
-      // 楽観ロック: 自前で +1
       data.lockVersion = before.lockVersion + 1;
 
       const item = await tx.budgetItem.update({ where: { id: itemId }, data });
 
-      // 金額影響があった場合のみ rollUp
+      // 子孫の level を相対差分で更新
+      if (parentChanging && newLevel !== before.level) {
+        const delta = newLevel - before.level;
+        await shiftDescendantLevel(tx, item.id, delta);
+      }
+
+      // ロールアップ
       const amountChanged = before.kind === 'detail' && (qtyChanged || priceChanged);
-      if (amountChanged) {
+      if (parentChanging) {
+        // 旧親 (abandoned) と新親 (received) 両方を再集計
+        await rollUpFromParent(tx as Tx, budgetId, before.parentId);
+        await rollUpFromParent(tx as Tx, budgetId, item.parentId);
+      } else if (amountChanged) {
         await rollUpFromParent(tx as Tx, budgetId, before.parentId);
       }
 
-      // audit (tx 外でやると整合性が損なわれるが、AuditService は別接続なので
-      //  まず item の状態だけ確定 → tx の callback 戻り値で外側で audit ログ)
       return { item, before };
     });
 
@@ -321,6 +372,50 @@ export class BudgetItemsService {
     if (!exists) {
       throw new NotFoundException({ code: 'NOT_FOUND', message: '予算が見つかりません' });
     }
+  }
+}
+
+/**
+ * candidate が ancestor の子孫かを BFS で判定する。
+ * ツリー移動時の循環防止に使う (= 自分の子孫を新親に指定するのを禁止)。
+ * 深さ 50 をガード上限とする。
+ */
+async function isDescendant(tx: Tx, ancestorId: string, candidateId: string): Promise<boolean> {
+  let frontier: string[] = [ancestorId];
+  for (let depth = 0; depth < 50 && frontier.length > 0; depth++) {
+    const children = await tx.budgetItem.findMany({
+      where: { parentId: { in: frontier }, deletedAt: null },
+      select: { id: true },
+    });
+    const ids = children.map((c) => c.id);
+    if (ids.includes(candidateId)) return true;
+    frontier = ids;
+  }
+  return false;
+}
+
+/**
+ * 指定 item を起点に、配下の **子孫すべての level** を delta だけシフトする。
+ * 親付け替えで level が変わった場合に呼ばれる。BFS で 1 階層ずつ updateMany。
+ */
+async function shiftDescendantLevel(tx: Tx, rootId: string, delta: number): Promise<void> {
+  if (delta === 0) return;
+  let frontier: string[] = [rootId];
+  for (let depth = 0; depth < 50 && frontier.length > 0; depth++) {
+    const children = await tx.budgetItem.findMany({
+      where: { parentId: { in: frontier }, deletedAt: null },
+      select: { id: true, level: true },
+    });
+    if (children.length === 0) break;
+    // 同じ delta を一括 update (Prisma の updateMany は SET col=col+? を直接書けないので
+    //  小バッチで update を呼ぶ。深さ 50 以内、件数は実運用で数十〜数百を想定)
+    for (const c of children) {
+      await tx.budgetItem.update({
+        where: { id: c.id },
+        data: { level: c.level + delta },
+      });
+    }
+    frontier = children.map((c) => c.id);
   }
 }
 

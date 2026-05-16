@@ -272,6 +272,135 @@ describe('BudgetItemsService.update (楽観ロック + amount 再計算)', () =>
 });
 
 // =====================================================================
+describe('BudgetItemsService.update (tree move)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('parentId を別の composite に変更すると level=新親+1 + disconnect/connect', async () => {
+    const { service, prisma } = build();
+    const movingItem = { ...seedItem, parentId: 'old-parent', level: 1 };
+    const txUpdate = vi.fn().mockResolvedValue({ ...movingItem, parentId: 'new-parent', level: 2 });
+    // findFirst: 1) item 取得, 2) 新親検証
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce(movingItem)
+      .mockResolvedValueOnce({ id: 'new-parent', level: 1, kind: 'composite' });
+    makeTxRunner(prisma, {
+      budgetItem: {
+        findFirst,
+        update: txUpdate,
+        aggregate: vi.fn().mockResolvedValue({ _sum: { amount: new Prisma.Decimal(0) } }),
+        // isDescendant / shiftDescendantLevel 用 (子孫なし)
+        findMany: vi.fn().mockResolvedValue([]),
+        findUnique: vi.fn().mockResolvedValue({ parentId: null }),
+      },
+      budget: { update: vi.fn() },
+    });
+
+    await service.update(
+      projectId,
+      budgetId,
+      itemId,
+      { lockVersion: 3, parentId: 'new-parent' },
+      actorId,
+      ctx,
+    );
+
+    const data = txUpdate.mock.calls[0]?.[0]?.data as {
+      parent?: { connect?: { id: string } };
+      level?: number;
+    };
+    expect(data.parent?.connect?.id).toBe('new-parent');
+    expect(data.level).toBe(2);
+  });
+
+  it('parentId=null を渡すとルートへ移動 (level=0, parent.disconnect)', async () => {
+    const { service, prisma } = build();
+    const movingItem = { ...seedItem, parentId: 'old-parent', level: 2 };
+    const txUpdate = vi.fn().mockResolvedValue({ ...movingItem, parentId: null, level: 0 });
+    makeTxRunner(prisma, {
+      budgetItem: {
+        findFirst: vi.fn().mockResolvedValueOnce(movingItem),
+        update: txUpdate,
+        aggregate: vi.fn().mockResolvedValue({ _sum: { amount: new Prisma.Decimal(0) } }),
+        findMany: vi.fn().mockResolvedValue([]),
+        findUnique: vi.fn().mockResolvedValue({ parentId: null }),
+      },
+      budget: { update: vi.fn() },
+    });
+    await service.update(
+      projectId,
+      budgetId,
+      itemId,
+      { lockVersion: 3, parentId: null },
+      actorId,
+      ctx,
+    );
+    const data = txUpdate.mock.calls[0]?.[0]?.data as {
+      parent?: { disconnect?: boolean };
+      level?: number;
+    };
+    expect(data.parent).toEqual({ disconnect: true });
+    expect(data.level).toBe(0);
+  });
+
+  it('自分自身を親に指定すると 422 INVALID_PARENT', async () => {
+    const { service, prisma } = build();
+    const movingItem = { ...seedItem, parentId: 'old-parent', level: 1 };
+    makeTxRunner(prisma, {
+      budgetItem: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(movingItem)
+          .mockResolvedValueOnce({ id: itemId, level: 1, kind: 'composite' }),
+        update: vi.fn(),
+        aggregate: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
+        findUnique: vi.fn(),
+      },
+      budget: { update: vi.fn() },
+    });
+    await expect(
+      service.update(
+        projectId,
+        budgetId,
+        itemId,
+        { lockVersion: 3, parentId: itemId },
+        actorId,
+        ctx,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('葉 (detail) を親に指定すると 422 INVALID_PARENT_KIND', async () => {
+    const { service, prisma } = build();
+    const movingItem = { ...seedItem, parentId: 'old-parent', level: 1 };
+    makeTxRunner(prisma, {
+      budgetItem: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(movingItem)
+          .mockResolvedValueOnce({ id: 'leaf-parent', level: 2, kind: 'detail' }),
+        update: vi.fn(),
+        aggregate: vi.fn(),
+        findMany: vi.fn(),
+        findUnique: vi.fn(),
+      },
+      budget: { update: vi.fn() },
+    });
+    await expect(
+      service.update(
+        projectId,
+        budgetId,
+        itemId,
+        { lockVersion: 3, parentId: 'leaf-parent' },
+        actorId,
+        ctx,
+      ),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});
+
+// =====================================================================
 describe('BudgetItemsService.softDelete (楽観ロック + 子持ち拒否)', () => {
   beforeEach(() => vi.clearAllMocks());
 
