@@ -7,6 +7,7 @@ import { useToast } from '@/components/ui/toast';
 import { updateBudget } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 import { formatAmount } from '@/lib/format';
+import { BudgetExportButton } from './BudgetExportButton';
 import { BudgetHeaderDialog } from './BudgetHeaderDialog';
 import { BudgetWorkflowActions } from './BudgetWorkflowActions';
 
@@ -131,6 +132,8 @@ export function BudgetHeaderEditor({
         </div>
 
         <div className="flex flex-col items-end gap-2">
+          {/* Excel 出力は status 不問で常時表示 (記録目的) */}
+          <BudgetExportButton projectId={projectId} budgetId={budget.id} />
           <div className="text-right">
             <div className="text-xs text-muted-foreground">合計</div>
             <div className="text-xl font-semibold tabular-nums">

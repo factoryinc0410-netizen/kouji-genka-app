@@ -9,7 +9,7 @@ import type {
   UpdateBudgetItemRequest,
   UpdateBudgetRequest,
 } from '@kgk/schemas';
-import { apiFetch } from './client';
+import { API_BASE_URL, ApiError, apiFetch } from './client';
 
 const root = (projectId: string) => `/projects/${projectId}/budgets`;
 
@@ -138,6 +138,61 @@ export function reviseBudget(
     method: 'POST',
     body: JSON.stringify({ lockVersion }),
   });
+}
+
+// ---- T27: Excel エクスポート ----
+
+/**
+ * 予算の Excel ファイル (xlsx) をダウンロード用に取得。
+ *
+ * - apiFetch は JSON 前提のため、ここでは素 fetch を使う
+ * - filename はサーバの Content-Disposition から RFC 5987 (filename*=UTF-8'') 優先で抽出
+ * - エラー時は ApiError を投げる (UI 側でトースト)
+ */
+export async function exportBudget(
+  projectId: string,
+  budgetId: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch(`${API_BASE_URL}${root(projectId)}/${budgetId}/export`, {
+    method: 'GET',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    let code = 'EXPORT_FAILED';
+    let message = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { code?: string; message?: string };
+      code = body.code ?? code;
+      message = body.message ?? message;
+    } catch {
+      // JSON parse 失敗は HTTP テキストでフォールバック
+    }
+    throw new ApiError(res.status, code, message);
+  }
+  const blob = await res.blob();
+  const filename = parseFilename(res.headers.get('content-disposition'));
+  return { blob, filename };
+}
+
+/**
+ * Content-Disposition ヘッダから filename を抽出。
+ * RFC 5987 (filename*=UTF-8''xxx) を優先し、なければ ASCII filename= を使用。
+ * パース失敗時は budget.xlsx をフォールバック。
+ */
+function parseFilename(header: string | null): string {
+  if (!header) return 'budget.xlsx';
+  // filename*=UTF-8''<encoded>
+  const star = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // フォールスルー
+    }
+  }
+  // filename="..."
+  const ascii = header.match(/filename\s*=\s*"?([^";]+)"?/i);
+  return ascii?.[1] ?? 'budget.xlsx';
 }
 
 export type { Budget };

@@ -17,6 +17,8 @@ async function bootstrap(): Promise<void> {
   app.enableCors({
     origin: corsOrigins,
     credentials: true,
+    // ファイルダウンロード時、ブラウザ側 JS から Content-Disposition を読むために expose
+    exposedHeaders: ['Content-Disposition'],
   });
 
   app.use(cookieParser(process.env.COOKIE_SECRET ?? 'dev-cookie-secret'));

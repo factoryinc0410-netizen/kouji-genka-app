@@ -23,6 +23,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -31,9 +32,11 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { ZodValidationPipe } from '../../common/zod.pipe';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
@@ -41,6 +44,7 @@ import { RequireProjectAccess } from '../auth/project-access.decorator';
 import { ProjectAccessGuard } from '../auth/project-access.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { BudgetExportService } from './budget-export.service';
 import { BudgetItemsService } from './budget-items.service';
 import { BudgetsService } from './budgets.service';
 
@@ -63,7 +67,10 @@ function contextFromReq(req: Request) {
 @Controller('projects/:projectId/budgets')
 @UseGuards(AuthGuard, RolesGuard, ProjectAccessGuard)
 export class BudgetsController {
-  constructor(private readonly budgets: BudgetsService) {}
+  constructor(
+    private readonly budgets: BudgetsService,
+    private readonly exportService: BudgetExportService,
+  ) {}
 
   @Get()
   @RequireProjectAccess('view')
@@ -79,6 +86,40 @@ export class BudgetsController {
   ) {
     const budget = await this.budgets.getById(projectId, budgetId);
     return { budget };
+  }
+
+  /**
+   * Excel エクスポート (内訳書 / T27)
+   *
+   * - 読取権限のみで OK (status 不問、approved や superseded でも記録目的でダウンロード可)
+   * - filename は日本語のため Content-Disposition は RFC 5987 (filename*=UTF-8'') を併記。
+   *   ASCII fallback として `budget_v{n}.xlsx` も `filename=` でセットする
+   * - 監査ログに `action='export'` を残す (Service 内で記録)
+   */
+  @Get(':budgetId/export')
+  @RequireProjectAccess('view')
+  @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  async export(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+    @CurrentUserId() actorId: string,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, filename } = await this.exportService.exportToExcel(
+      projectId,
+      budgetId,
+      actorId,
+      contextFromReq(req),
+    );
+    const asciiFallback = `budget_v${budgetId.slice(0, 8)}.xlsx`;
+    const encoded = encodeURIComponent(filename);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`,
+    );
+    res.setHeader('Content-Length', buffer.byteLength.toString());
+    return new StreamableFile(buffer);
   }
 
   @Post()

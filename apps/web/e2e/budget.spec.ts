@@ -449,4 +449,29 @@ test.describe
       // --- 後始末: lockVersion bump 分も含めて draft seed 値に戻す ---
       resetBudgetToSeed('2026-001');
     });
+
+    test('予算 Excel 出力: ボタンから xlsx ダウンロード (T27)', async ({ page }) => {
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // ボタンが常時表示 (status=draft でも、その他でも)
+      const exportBtn = page.getByRole('button', { name: 'Excel 出力' });
+      await expect(exportBtn).toBeVisible();
+
+      // ダウンロードイベントを待ち受けてからクリック
+      const [download] = await Promise.all([page.waitForEvent('download'), exportBtn.click()]);
+
+      // ファイル名: 「予算内訳書_初期予算 (v1)_v1.xlsx」
+      expect(download.suggestedFilename()).toBe('予算内訳書_初期予算 (v1)_v1.xlsx');
+
+      // 実ファイルが空でない (Excel ファイルなら最低数 KB ある)
+      const fs = await import('node:fs/promises');
+      const path = await download.path();
+      const stat = await fs.stat(path);
+      expect(stat.size).toBeGreaterThan(1000);
+    });
   });
