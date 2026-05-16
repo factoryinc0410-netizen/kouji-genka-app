@@ -149,7 +149,7 @@ export default function ProjectBudgetPage({
           projectId={projectId}
           budgetId={currentBudget.id}
           items={items}
-          onRefresh={() => void refresh(currentBudget.id)}
+          onRefresh={() => refresh(currentBudget.id)}
           onItemUpdated={handleItemUpdated}
           editable={currentBudget.status === 'draft'}
         />

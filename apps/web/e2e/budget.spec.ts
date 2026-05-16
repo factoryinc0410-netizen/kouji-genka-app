@@ -14,6 +14,30 @@ async function login(page: Page, email: string, password: string): Promise<void>
   await page.waitForURL((url) => !url.pathname.startsWith('/login'));
 }
 
+/**
+ * 予算操作 (commit / delete) の完全完了を待つ。
+ *
+ * BudgetTreeTable は data-busy="true|false" 属性を露出している。
+ * handlePatch 内で setBusy(true) → await PATCH → await onRefresh() → setBusy(false)
+ * という流れになっており、setBusy(false) の React commit が起きた時点で
+ * 直前の setItems 等の state 更新も commit 済 (React は順序保証)。
+ *
+ * よって data-busy が **true → false に遷移する** のを待てば、cell の
+ * row.original が最新 lockVersion で再レンダされていることが保証される。
+ */
+async function waitBudgetIdle(page: Page): Promise<void> {
+  const tableSel = '[data-testid="budget-table"]';
+  // busy=true を先に検知 (commit 中の証拠)。一瞬で抜けるなら catch して continue。
+  await page
+    .locator(`${tableSel}[data-busy="true"]`)
+    .waitFor({ state: 'attached', timeout: 2_000 })
+    .catch(() => {});
+  // busy=false になるのを待つ → setBusy(false) commit 済 = 先行 state 更新も commit 済
+  await page
+    .locator(`${tableSel}[data-busy="false"]`)
+    .waitFor({ state: 'attached', timeout: 10_000 });
+}
+
 test.describe
   .serial('budget tree UI', () => {
     test('シードの内訳ツリーが展開表示され、インライン編集でロールアップが反映される', async ({
@@ -108,13 +132,16 @@ test.describe
       await newQty.click();
       await newQty.fill('10');
       await newQty.blur();
+      await waitBudgetIdle(page);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 5_000 }); // 単価 0 なので 0
-      // 再度 row を取り直す (refetch で React key 維持されるが念のため)
+
+      // 再度 row を取り直す (refetch 後の React 要素)
       const newRow2 = page.locator('tr', { hasText: '新規明細' }).last();
       const newPrice = newRow2.locator('input').nth(1);
       await newPrice.click();
       await newPrice.fill('100');
       await newPrice.blur();
+      await waitBudgetIdle(page);
       // 10 * 100 = 1,000 が加算
       await expect(page.getByText('2,238,100 円')).toBeVisible({ timeout: 10_000 });
 
@@ -127,5 +154,92 @@ test.describe
       // 元の合計に復元
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('tr', { hasText: '新規明細' })).toHaveCount(0);
+    });
+
+    test('インライン編集 (name) と編集ダイアログでまとめ更新', async ({ page }) => {
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      const d111Row = page.locator('tr', { hasText: '1-1-1' });
+
+      // --- インライン編集: name = "掘削" → "掘削(改)" ---
+      // 通常表示は <button aria-label="名称">、クリックで <input aria-label="名称"> に切替
+      const nameBtn = d111Row.locator('button[aria-label="名称"]');
+      await expect(nameBtn).toContainText('掘削');
+      await nameBtn.click();
+      const nameInput = d111Row.locator('input[aria-label="名称"]');
+      await nameInput.waitFor({ state: 'visible' });
+      await nameInput.fill('掘削(改)');
+      await nameInput.press('Enter');
+      await waitBudgetIdle(page);
+
+      // 再表示された button に新しい値が反映
+      await expect(d111Row.locator('button[aria-label="名称"]')).toContainText('掘削(改)', {
+        timeout: 5_000,
+      });
+      // 金額は変わらないことを確認 (文字列フィールド変更で rollUp スキップ最適化)
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 5_000 });
+
+      // --- 編集ダイアログでまとめ更新: unit 'm3' → 'm³'、unitPrice 1200 → 1500 ---
+      await d111Row.getByRole('button', { name: '行アクション' }).click();
+      await page.getByRole('menuitem', { name: '編集' }).click();
+
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible({ timeout: 5_000 });
+      // ダイアログ内の初期値が正しいことを確認
+      await expect(dialog.locator('#b-name')).toHaveValue('掘削(改)');
+      await expect(dialog.locator('#b-unit')).toHaveValue('m3');
+      await expect(dialog.locator('#b-price')).toHaveValue('1200');
+
+      // 単位 → m³、単価 → 1500 に変更
+      await dialog.locator('#b-unit').fill('m³');
+      await dialog.locator('#b-price').fill('1500');
+      await dialog.getByRole('button', { name: '保存' }).click();
+      await expect(dialog).toBeHidden({ timeout: 5_000 });
+      await waitBudgetIdle(page);
+
+      // ロールアップ反映: 120.5 * 1500 = 180,750
+      // 元の d111 amount=144,600 → +36,150 → totalAmount=2,273,250
+      await expect(page.getByText('2,273,250 円')).toBeVisible({ timeout: 10_000 });
+      // 単位カラムにも m³ が反映
+      await expect(d111Row.locator('button[aria-label="単位"]')).toContainText('m³');
+
+      // --- 後始末: API 直叩きで seed 値に戻す ---
+      const req = page.request;
+      const loginRes = await req.post(`${API_BASE}/auth/login`, {
+        data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+      });
+      expect(loginRes.ok()).toBeTruthy();
+      const projects = (await (await req.get(`${API_BASE}/projects`)).json()) as {
+        items: Array<{ id: string; code: string }>;
+      };
+      const project = projects.items.find((p) => p.code === '2026-001');
+      if (!project) throw new Error('seed project 2026-001 missing');
+      const budgets = (await (
+        await req.get(`${API_BASE}/projects/${project.id}/budgets`)
+      ).json()) as { items: Array<{ id: string }> };
+      const budget = budgets.items[0];
+      if (!budget) throw new Error('seed budget missing');
+      const tree = (await (
+        await req.get(`${API_BASE}/projects/${project.id}/budgets/${budget.id}/items`)
+      ).json()) as { items: Array<{ id: string; code: string | null; lockVersion: number }> };
+      const d111 = tree.items.find((i) => i.code === '1-1-1');
+      if (!d111) throw new Error('seed d111 missing');
+      const revertRes = await req.patch(
+        `${API_BASE}/projects/${project.id}/budgets/${budget.id}/items/${d111.id}`,
+        {
+          data: {
+            lockVersion: d111.lockVersion,
+            name: '掘削',
+            unit: 'm3',
+            unitPrice: '1200',
+          },
+        },
+      );
+      expect(revertRes.ok()).toBeTruthy();
     });
   });

@@ -10,7 +10,7 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { BudgetItem, BudgetItemKind } from '@kgk/schemas';
+import type { BudgetItem, BudgetItemKind, UpdateBudgetItemRequest } from '@kgk/schemas';
 import {
   type ColumnDef,
   flexRender,
@@ -19,13 +19,14 @@ import {
   type Row,
   useReactTable,
 } from '@tanstack/react-table';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/components/ui/toast';
 import { createBudgetItem, deleteBudgetItem, updateBudgetItem } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 import { type BudgetItemNode, buildBudgetTree } from '@/lib/budget-tree';
 import { formatAmount } from '@/lib/format';
+import { BudgetItemEditDialog } from './BudgetItemEditDialog';
 
 const KIND_LABEL: Record<BudgetItem['kind'], string> = {
   section: '科目',
@@ -45,7 +46,8 @@ interface Props {
   projectId: string;
   budgetId: string;
   items: BudgetItem[];
-  onRefresh: () => void;
+  /** 親に items の再取得を要求する。完了 Promise を返すことで連続編集時の race を防ぐ */
+  onRefresh: () => Promise<void> | void;
   onItemUpdated: (updated: BudgetItem) => void;
   editable?: boolean;
 }
@@ -63,6 +65,8 @@ export function BudgetTreeTable({
 
   // 連続操作による不整合防止 (1 操作中は再操作を弾く)
   const [busy, setBusy] = useState(false);
+  // 「編集」ダイアログの対象。null = 非表示。
+  const [editingItem, setEditingItem] = useState<BudgetItem | null>(null);
   const withBusy = useCallback(
     async (fn: () => Promise<void>): Promise<void> => {
       if (busy) return;
@@ -97,22 +101,32 @@ export function BudgetTreeTable({
     [toast, onRefresh],
   );
 
-  // ---------- 葉の数量・単価インライン編集 ----------
-  const handleEditDetail = useCallback(
-    async (
-      item: BudgetItem,
-      body: { lockVersion: number; quantity?: string; unitPrice?: string },
-    ): Promise<void> =>
-      withBusy(async () => {
-        try {
-          const res = await updateBudgetItem(projectId, budgetId, item.id, body);
-          onItemUpdated(res.item);
-          onRefresh();
-        } catch (err) {
-          handleApiError(err, '更新に失敗しました');
-        }
-      }),
-    [projectId, budgetId, onItemUpdated, onRefresh, withBusy, handleApiError],
+  // ---------- インライン編集 (数量・単価・文字列フィールド共通) ----------
+  // 楽観ロックを呼び出し側に意識させず、現行 lockVersion を内部で付与する。
+  // ※ 文字列フィールド (code/name/spec/unit/notes) のみの変更時は
+  //   Service 側で rollUp をスキップする最適化が効くため、UI 側は気にせず呼べる。
+  // ※ withBusy で包まない: インライン編集は連続発火 (qty → price 即時 blur など) するため、
+  //   ガードでサイレントドロップせず、競合は楽観ロック (409) で守る。
+  //   見た目の busy は setBusy(true/false) を直接立てて反映。
+  const handlePatch = useCallback(
+    async (item: BudgetItem, body: Omit<UpdateBudgetItemRequest, 'lockVersion'>): Promise<void> => {
+      setBusy(true);
+      try {
+        const res = await updateBudgetItem(projectId, budgetId, item.id, {
+          lockVersion: item.lockVersion,
+          ...body,
+        });
+        onItemUpdated(res.item);
+        // 親の refetch (items GET) を await することで、後続の連続編集が
+        // 旧 lockVersion を持った古い row.original でコミットされる race を防ぐ
+        await onRefresh();
+      } catch (err) {
+        handleApiError(err, '更新に失敗しました');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, budgetId, onItemUpdated, onRefresh, handleApiError],
   );
 
   // ---------- アクション: 同階層追加 / 子追加 / 削除 ----------
@@ -291,7 +305,14 @@ export function BudgetTreeTable({
             ) : (
               <span className="mr-1 inline-block w-5" />
             )}
-            <span className="font-mono text-xs">{row.original.code ?? '—'}</span>
+            <EditableTextCell
+              ariaLabel="コード"
+              value={row.original.code}
+              maxLength={50}
+              className="font-mono text-xs"
+              disabled={!editable}
+              onCommit={(next) => handlePatch(row.original, { code: next })}
+            />
           </div>
         ),
       },
@@ -300,9 +321,26 @@ export function BudgetTreeTable({
         header: '摘要',
         size: 280,
         cell: ({ row }) => (
-          <div>
-            <div>{row.original.name}</div>
-            {row.original.spec ? (
+          <div className="space-y-0.5">
+            <EditableTextCell
+              ariaLabel="名称"
+              value={row.original.name}
+              required
+              maxLength={200}
+              disabled={!editable}
+              onCommit={(next) => handlePatch(row.original, { name: next ?? '' })}
+            />
+            {row.original.kind === 'detail' ? (
+              <EditableTextCell
+                ariaLabel="仕様"
+                value={row.original.spec}
+                maxLength={2000}
+                emptyDisplay="(仕様を追加)"
+                className="text-xs text-muted-foreground"
+                disabled={!editable}
+                onCommit={(next) => handlePatch(row.original, { spec: next })}
+              />
+            ) : row.original.spec ? (
               <div className="text-xs text-muted-foreground">{row.original.spec}</div>
             ) : null}
           </div>
@@ -341,7 +379,19 @@ export function BudgetTreeTable({
         id: 'unit',
         header: '単位',
         size: 60,
-        cell: ({ row }) => <span className="text-xs">{row.original.unit ?? '—'}</span>,
+        cell: ({ row }) =>
+          row.original.kind === 'detail' ? (
+            <EditableTextCell
+              ariaLabel="単位"
+              value={row.original.unit}
+              maxLength={20}
+              className="text-xs"
+              disabled={!editable}
+              onCommit={(next) => handlePatch(row.original, { unit: next })}
+            />
+          ) : (
+            <span className="text-xs">{row.original.unit ?? '—'}</span>
+          ),
       },
       {
         id: 'quantity',
@@ -352,12 +402,7 @@ export function BudgetTreeTable({
             <DecimalCell
               value={row.original.quantity}
               pattern={/^\d+(\.\d{1,4})?$/}
-              onCommit={(next) =>
-                handleEditDetail(row.original, {
-                  lockVersion: row.original.lockVersion,
-                  quantity: next,
-                })
-              }
+              onCommit={(next) => handlePatch(row.original, { quantity: next })}
             />
           ) : (
             <div className="text-right tabular-nums">{row.original.quantity}</div>
@@ -372,12 +417,7 @@ export function BudgetTreeTable({
             <DecimalCell
               value={row.original.unitPrice}
               pattern={/^\d+$/}
-              onCommit={(next) =>
-                handleEditDetail(row.original, {
-                  lockVersion: row.original.lockVersion,
-                  unitPrice: next,
-                })
-              }
+              onCommit={(next) => handlePatch(row.original, { unitPrice: next })}
               formatDisplay={(v) => (v ? formatAmount(v) : '')}
             />
           ) : (
@@ -406,6 +446,7 @@ export function BudgetTreeTable({
           editable ? (
             <RowActions
               item={row.original}
+              onEdit={() => setEditingItem(row.original)}
               onAddSibling={() => void addSibling(row.original)}
               onAddChild={() => void addChild(row.original)}
               onDelete={() => void removeRow(row.original)}
@@ -413,7 +454,7 @@ export function BudgetTreeTable({
           ) : null,
       },
     ],
-    [editable, handleEditDetail, addSibling, addChild, removeRow],
+    [editable, handlePatch, addSibling, addChild, removeRow],
   );
 
   const table = useReactTable({
@@ -441,9 +482,45 @@ export function BudgetTreeTable({
         </div>
       ) : null}
 
+      {editingItem ? (
+        <BudgetItemEditDialog
+          open={editingItem !== null}
+          item={editingItem}
+          projectId={projectId}
+          budgetId={budgetId}
+          onOpenChange={(open) => {
+            if (!open) setEditingItem(null);
+          }}
+          onSaved={async () => {
+            setEditingItem(null);
+            // インライン編集と同じ busy ライフサイクルにのせる: refetch 完了まで busy=true
+            setBusy(true);
+            try {
+              await onRefresh();
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onConflict={() => {
+            setEditingItem(null);
+            toast.show({
+              kind: 'warning',
+              title: '他のユーザによって更新されました',
+              description: '最新の値をリロードしてから再度操作してください。',
+              actionLabel: '最新を取得',
+              onAction: onRefresh,
+            });
+          }}
+        />
+      ) : null}
+
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={flatIds} strategy={verticalListSortingStrategy}>
-          <div className={`overflow-x-auto rounded-md border bg-card ${busy ? 'opacity-70' : ''}`}>
+          <div
+            data-testid="budget-table"
+            data-busy={busy ? 'true' : 'false'}
+            className={`overflow-x-auto rounded-md border bg-card ${busy ? 'opacity-70' : ''}`}
+          >
             <table className="w-full text-sm">
               <thead className="bg-muted text-left text-xs uppercase tracking-wide text-muted-foreground">
                 {table.getHeaderGroups().map((hg) => (
@@ -537,11 +614,13 @@ function DragHandle({ id }: { id: string }) {
 
 function RowActions({
   item,
+  onEdit,
   onAddSibling,
   onAddChild,
   onDelete,
 }: {
   item: BudgetItem;
+  onEdit: () => void;
   onAddSibling: () => void;
   onAddChild: () => void;
   onDelete: () => void;
@@ -562,6 +641,15 @@ function RowActions({
     >
       {(close) => (
         <>
+          <DropdownItem
+            onClick={() => {
+              close();
+              onEdit();
+            }}
+          >
+            編集
+          </DropdownItem>
+          <DropdownSeparator />
           <DropdownItem
             onClick={() => {
               close();
@@ -612,6 +700,128 @@ function flattenIds(nodes: BudgetItemNode[]): string[] {
   };
   walk(nodes);
   return out;
+}
+
+/**
+ * テキストフィールドのインラインセル (click-to-edit)。
+ * - 通常表示: テキスト + hover ハイライト (空なら emptyDisplay をプレースホルダ)
+ * - クリック: <input> に切替、autofocus
+ * - blur / Enter: 値を trim → 変化があれば onCommit、変化なしならそのまま閉じる
+ * - Esc: 編集破棄
+ * - required: 空 (trim 後 '') は無視して元の値に戻す (Service 側でも 400 になるが UI 層で吸収)
+ * - 空文字は **null** として送信するので、Schema 側 `.nullable().optional()` に合う
+ */
+function EditableTextCell({
+  value,
+  required,
+  maxLength,
+  emptyDisplay = '—',
+  className,
+  ariaLabel,
+  disabled,
+  onCommit,
+}: {
+  value: string | null;
+  required?: boolean;
+  maxLength: number;
+  emptyDisplay?: string;
+  className?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+  onCommit: (next: string | null) => Promise<void> | void;
+}): React.ReactElement {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? '');
+  const [pending, setPending] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // 親から value が更新されたら draft を同期 (編集中/送信中でない場合に限る)
+  if (!editing && !pending && draft !== (value ?? '')) {
+    setDraft(value ?? '');
+  }
+
+  // 編集モード開始直後にフォーカス + 全選択 (autoFocus 属性は a11y 違反のため useEffect で)
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onClick={() => {
+          if (disabled) return;
+          setDraft(value ?? '');
+          setEditing(true);
+        }}
+        className={
+          'w-full rounded-sm px-1 py-0.5 text-left ' +
+          (disabled
+            ? 'cursor-default'
+            : 'cursor-text hover:bg-muted/50 focus:bg-muted/50 focus:outline-none') +
+          (className ? ` ${className}` : '')
+        }
+      >
+        {value ? value : <span className="text-muted-foreground/60 italic">{emptyDisplay}</span>}
+      </button>
+    );
+  }
+
+  const commit = async (): Promise<void> => {
+    const trimmed = draft.trim();
+    if (required && trimmed === '') {
+      // 必須フィールドが空 → 編集破棄
+      setDraft(value ?? '');
+      setEditing(false);
+      return;
+    }
+    const normalized = trimmed === '' ? null : trimmed;
+    if ((normalized ?? '') === (value ?? '')) {
+      setEditing(false);
+      return;
+    }
+    setPending(true);
+    try {
+      await onCommit(normalized);
+    } finally {
+      setPending(false);
+      setEditing(false);
+    }
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      value={draft}
+      maxLength={maxLength}
+      aria-label={ariaLabel}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        void commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          (e.currentTarget as HTMLInputElement).blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setDraft(value ?? '');
+          setEditing(false);
+        }
+      }}
+      disabled={pending}
+      className={
+        'h-7 w-full rounded-sm border border-input bg-background px-1 outline-none focus:ring-1 focus:ring-input ' +
+        (className ?? '')
+      }
+    />
+  );
 }
 
 /**
