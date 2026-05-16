@@ -1,0 +1,12 @@
+// kouji-genka Prisma schema
+// 詳細なエンティティ定義は W2 以降で追加していく (REQUIREMENTS.md §7)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = []
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

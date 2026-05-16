@@ -3,9 +3,12 @@ packages:
   - "packages/*"
 allowBuilds:
   '@nestjs/core': true
+  '@prisma/client': true
+  '@prisma/engines': true
   '@swc/core': true
   esbuild: true
   msw: true
+  prisma: true
   sharp: true
 onlyBuiltDependencies:
   - sharp
@@ -13,3 +16,6 @@ onlyBuiltDependencies:
   - '@nestjs/core'
   - '@swc/core'
   - esbuild
+  - prisma
+  - '@prisma/client'
+  - '@prisma/engines'
