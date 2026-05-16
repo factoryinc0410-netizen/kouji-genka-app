@@ -38,6 +38,7 @@ enum AuditAction {
   logout
   export
   permission_change
+  access_denied
 }
 
 // ===================================================================
