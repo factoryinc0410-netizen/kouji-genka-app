@@ -2,8 +2,14 @@ packages:
   - "apps/*"
   - "packages/*"
 allowBuilds:
+  '@nestjs/core': true
+  '@swc/core': true
+  esbuild: true
   msw: true
   sharp: true
 onlyBuiltDependencies:
   - sharp
   - msw
+  - '@nestjs/core'
+  - '@swc/core'
+  - esbuild
