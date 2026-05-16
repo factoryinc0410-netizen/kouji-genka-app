@@ -80,10 +80,18 @@ export default function AdminProjectDetailPage({
         <Link href="/admin/projects" className="text-sm text-muted-foreground hover:underline">
           ← 工事管理に戻る
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold">
-          <span className="mr-3 font-mono text-base text-muted-foreground">{project.code}</span>
-          {project.name}
-        </h1>
+        <div className="mt-2 flex items-end justify-between gap-4">
+          <h1 className="text-2xl font-semibold">
+            <span className="mr-3 font-mono text-base text-muted-foreground">{project.code}</span>
+            {project.name}
+          </h1>
+          <Link
+            href={`/admin/projects/${project.id}/budget`}
+            className="inline-flex h-8 items-center rounded-md border border-input bg-background px-3 text-sm hover:bg-muted"
+          >
+            実行予算を開く →
+          </Link>
+        </div>
       </div>
 
       <section className="rounded-md border bg-card p-6">
