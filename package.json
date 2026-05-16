@@ -1,0 +1,22 @@
+{
+  "name": "kouji-genka",
+  "version": "0.0.0",
+  "private": true,
+  "description": "工事原価管理 Web アプリ kouji-genka (KGK) - monorepo root",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0"
+  }
+}
