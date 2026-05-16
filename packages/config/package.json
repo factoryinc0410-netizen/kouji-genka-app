@@ -1,0 +1,11 @@
+{
+  "name": "@kgk/config",
+  "version": "0.0.0",
+  "private": true,
+  "description": "kouji-genka 共通設定 (tsconfig base 等)",
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.node.json",
+    "tsconfig.react.json"
+  ]
+}
