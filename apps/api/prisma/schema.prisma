@@ -71,6 +71,33 @@ enum CustomerType {
   supplier // 仕入
 }
 
+/// REQUIREMENTS §4: 実行予算のステータス遷移 (W4)
+enum BudgetStatus {
+  draft // 作成中
+  pending_approval // 承認待ち
+  approved // 承認済
+  superseded // 旧版 (新バージョンで置換)
+}
+
+/// REQUIREMENTS §4: 内訳/代価行の種別 (MARS の明細種別相当)
+/// - section:   集計のみのヘッダ (大科目/中分類)。金額は子の合計。
+/// - detail:    内訳明細の葉ノード。cost_element 必須。
+/// - composite: 代価表ヘッダ。配下の子明細を持ち、自身の単価は子合計を quantity で按分。
+enum BudgetItemKind {
+  section
+  detail
+  composite
+}
+
+/// REQUIREMENTS §4: 原価要素 (MARS の費目区分相当)
+enum CostElement {
+  labor // 労務
+  material // 材料
+  subcontract // 外注
+  machine // 機械
+  expense // 経費
+}
+
 // ===================================================================
 // 認証・認可
 // ===================================================================
@@ -96,6 +123,8 @@ model User {
   auditLogs            AuditLog[]
   managedProjects      Project[]               @relation("ProjectManager")
   projectStatusChanges ProjectStatusHistory[]  @relation("ProjectStatusChanger")
+  submittedBudgets     Budget[]                @relation("BudgetSubmitter")
+  approvedBudgets      Budget[]                @relation("BudgetApprover")
 
   @@index([roleId])
   @@index([deletedAt])
@@ -229,6 +258,7 @@ model Project {
   manager       User?                   @relation("ProjectManager", fields: [managerUserId], references: [id], onDelete: SetNull)
   permissions   UserProjectPermission[]
   statusHistory ProjectStatusHistory[]
+  budgets       Budget[]
 
   @@index([customerId])
   @@index([managerUserId])
@@ -256,4 +286,95 @@ model ProjectStatusHistory {
   @@index([projectId])
   @@index([changedAt])
   @@map("project_status_history")
+}
+
+// ===================================================================
+// 実行予算 (Budget) と明細ツリー (BudgetItem) — W4
+// REQUIREMENTS §4 / CLAUDE.md「階層構造」「金額・数量の扱い」準拠
+// ===================================================================
+
+/// 実行予算ヘッダ
+/// - 1 Project に対し N Budget (version で世代管理)
+/// - 「同一 Project 内でアクティブな (draft/pending_approval/approved) Budget は 1 つ」
+///   の制約は後続の partial UNIQUE (raw SQL) で必要に応じて追加予定
+model Budget {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  projectId     String       @map("project_id") @db.Uuid
+  version       Int          @default(1)
+  status        BudgetStatus @default(draft)
+  /// 「初期予算」「実行予算 v2」など、UI 表示用 (任意)
+  title         String?      @db.VarChar(200)
+  /// 子明細 (level=0) の amount 合計。更新は app 層の集計サービス経由
+  totalAmount   Decimal      @default(0) @map("total_amount") @db.Decimal(15, 0)
+  /// 申請・承認の追跡
+  submittedById String?      @map("submitted_by_id") @db.Uuid
+  submittedAt   DateTime?    @map("submitted_at") @db.Timestamptz(6)
+  approvedById  String?      @map("approved_by_id") @db.Uuid
+  approvedAt    DateTime?    @map("approved_at") @db.Timestamptz(6)
+  notes         String?      @db.Text
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// 論理削除
+  deletedAt     DateTime?    @map("deleted_at") @db.Timestamptz(6)
+
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  submitter User?        @relation("BudgetSubmitter", fields: [submittedById], references: [id], onDelete: SetNull)
+  approver  User?        @relation("BudgetApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  items     BudgetItem[]
+
+  @@unique([projectId, version])
+  @@index([projectId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("budgets")
+}
+
+/// 予算明細行 (内訳表 + 代価表の統一表現)
+/// - parent_id 自己参照ツリー、同一階層内の順序は display_order (1000 刻み運用想定)
+/// - kind で section/detail/composite を区別。level は走査・表示用の冗長カラム
+/// - 数量 (15,4)、単価 (15,0)、金額 (15,0)。金額は葉=quantity*unitPrice、節点=子合計
+///   (app 層で再計算)。API レスポンスは精度ロスゼロのため string 化
+model BudgetItem {
+  id           String         @id @default(uuid(7)) @db.Uuid
+  budgetId     String         @map("budget_id") @db.Uuid
+  /// 自己参照 FK。トップレベルは null
+  parentId     String?        @map("parent_id") @db.Uuid
+  /// 階層レベル (0=ルート)。整合性は app/トリガで担保
+  level        Int            @default(0)
+  /// 同一 parent 内の並び順 (1000, 2000, 3000 ... で間に挿入できるよう運用)
+  displayOrder Int            @default(0) @map("display_order")
+  kind         BudgetItemKind @default(detail)
+  /// 社内採番の内訳コード (任意)
+  code         String?        @db.VarChar(50)
+  /// 摘要・名称
+  name         String         @db.VarChar(200)
+  /// 規格・仕様
+  spec         String?        @db.Text
+  /// 単位 (m3 / kg / 人工 / 式 など)
+  unit         String?        @db.VarChar(20)
+  /// 原価要素。kind=detail で必須、section/composite では null
+  costElement  CostElement?   @map("cost_element")
+  /// 数量 (15,4)
+  quantity     Decimal        @default(0) @db.Decimal(15, 4)
+  /// 単価 (15,0 円)
+  unitPrice    Decimal        @default(0) @map("unit_price") @db.Decimal(15, 0)
+  /// 金額 (15,0 円)。葉=quantity*unitPrice、節点=子合計
+  amount       Decimal        @default(0) @db.Decimal(15, 0)
+  notes        String?        @db.Text
+  /// 楽観ロック (CLAUDE.md の方針)
+  lockVersion  Int            @default(0) @map("lock_version")
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// 論理削除
+  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  budget   Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  parent   BudgetItem?  @relation("BudgetItemTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children BudgetItem[] @relation("BudgetItemTree")
+
+  @@index([budgetId, parentId, displayOrder])
+  @@index([parentId])
+  @@index([budgetId, costElement])
+  @@index([deletedAt])
+  @@map("budget_items")
 }

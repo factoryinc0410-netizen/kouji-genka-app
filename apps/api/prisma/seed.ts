@@ -192,11 +192,190 @@ async function seedProjects(
   }
 }
 
+// ===================================================================
+// Budgets & BudgetItems (W4 T21)
+// ===================================================================
+
+/**
+ * 1 つの Project (2026-001) に対し、draft Budget を 1 つだけ生成。
+ * サンプル明細は以下のツリー (MARS 風):
+ *   §1 直接工事費 [section, level=0]
+ *    ├─ 土工事 [composite, level=1]
+ *    │   ├─ 掘削 (機械)  数量 120.5 m3, 単価 1,200 円
+ *    │   └─ 人工         数量   2.5 人工, 単価 25,000 円
+ *    └─ 鉄筋工事 (材料) [detail, level=1] 数量 8,500 kg, 単価 180 円
+ *   §2 共通仮設費 (経費) [detail, level=0] 数量 1 式, 単価 500,000 円
+ *
+ * version は (projectId, version) UNIQUE のため、既に存在する場合は no-op で skip。
+ */
+async function seedBudgetForFirstProject(): Promise<void> {
+  const project = await prisma.project.findUnique({ where: { code: '2026-001' } });
+  if (!project) return;
+
+  const existing = await prisma.budget.findUnique({
+    where: { projectId_version: { projectId: project.id, version: 1 } },
+  });
+  if (existing) return;
+
+  const dec = (s: string): Prisma.Decimal => new Prisma.Decimal(s);
+
+  // ---------- ツリー構造 (display_order は 1000 刻みで挿入余地を残す) ----------
+  // §1 直接工事費 (section)
+  //   1-1 土工事 (composite)
+  //     1-1-1 掘削 (machine)
+  //     1-1-2 人工 (labor)
+  //   1-2 鉄筋工事 (material)
+  // §2 共通仮設費 (expense)
+
+  await prisma.$transaction(async (tx) => {
+    // Budget 本体
+    const budget = await tx.budget.create({
+      data: {
+        projectId: project.id,
+        version: 1,
+        status: 'draft',
+        title: '初期予算 (v1)',
+        notes: 'シードデータ: サンプルの内訳ツリー (土工事 / 鉄筋 / 共通仮設費)',
+        // totalAmount は明細投入後にまとめて更新
+      },
+    });
+
+    // §1 直接工事費 (section)
+    const s1 = await tx.budgetItem.create({
+      data: {
+        budgetId: budget.id,
+        parentId: null,
+        level: 0,
+        displayOrder: 1000,
+        kind: 'section',
+        code: '1',
+        name: '直接工事費',
+        // amount は子合計、ここでは 0 のまま (下で更新)
+      },
+    });
+
+    // §1.1 土工事 (composite)
+    const c11 = await tx.budgetItem.create({
+      data: {
+        budgetId: budget.id,
+        parentId: s1.id,
+        level: 1,
+        displayOrder: 1000,
+        kind: 'composite',
+        code: '1-1',
+        name: '土工事',
+        unit: '式',
+        quantity: dec('1.0000'),
+      },
+    });
+
+    // §1.1.1 掘削 (detail / machine)
+    const d111_qty = dec('120.5000');
+    const d111_price = dec('1200');
+    const d111_amount = d111_qty.mul(d111_price).toDecimalPlaces(0);
+    await tx.budgetItem.create({
+      data: {
+        budgetId: budget.id,
+        parentId: c11.id,
+        level: 2,
+        displayOrder: 1000,
+        kind: 'detail',
+        code: '1-1-1',
+        name: '掘削',
+        spec: 'バックホウ 0.45 m3 級',
+        unit: 'm3',
+        costElement: 'machine',
+        quantity: d111_qty,
+        unitPrice: d111_price,
+        amount: d111_amount,
+      },
+    });
+
+    // §1.1.2 人工 (detail / labor)
+    const d112_qty = dec('2.5000');
+    const d112_price = dec('25000');
+    const d112_amount = d112_qty.mul(d112_price).toDecimalPlaces(0);
+    await tx.budgetItem.create({
+      data: {
+        budgetId: budget.id,
+        parentId: c11.id,
+        level: 2,
+        displayOrder: 2000,
+        kind: 'detail',
+        code: '1-1-2',
+        name: '土工 (普通作業員)',
+        unit: '人工',
+        costElement: 'labor',
+        quantity: d112_qty,
+        unitPrice: d112_price,
+        amount: d112_amount,
+      },
+    });
+
+    // §1.2 鉄筋工事 (detail / material) — 単一の葉。代価表を持たない例
+    const d12_qty = dec('8500.0000');
+    const d12_price = dec('180');
+    const d12_amount = d12_qty.mul(d12_price).toDecimalPlaces(0);
+    await tx.budgetItem.create({
+      data: {
+        budgetId: budget.id,
+        parentId: s1.id,
+        level: 1,
+        displayOrder: 2000,
+        kind: 'detail',
+        code: '1-2',
+        name: '鉄筋 (SD345)',
+        spec: 'D13 〜 D22 混合',
+        unit: 'kg',
+        costElement: 'material',
+        quantity: d12_qty,
+        unitPrice: d12_price,
+        amount: d12_amount,
+      },
+    });
+
+    // §2 共通仮設費 (detail / expense)
+    const s2_qty = dec('1.0000');
+    const s2_price = dec('500000');
+    const s2_amount = s2_qty.mul(s2_price).toDecimalPlaces(0);
+    await tx.budgetItem.create({
+      data: {
+        budgetId: budget.id,
+        parentId: null,
+        level: 0,
+        displayOrder: 2000,
+        kind: 'detail',
+        code: '2',
+        name: '共通仮設費',
+        unit: '式',
+        costElement: 'expense',
+        quantity: s2_qty,
+        unitPrice: s2_price,
+        amount: s2_amount,
+      },
+    });
+
+    // ---------- 集計: composite と section の amount を子合計で更新 ----------
+    // §1.1 (composite) の amount = 子合計
+    const c11Sum = d111_amount.plus(d112_amount);
+    await tx.budgetItem.update({ where: { id: c11.id }, data: { amount: c11Sum } });
+
+    // §1 (section) の amount = §1.1 + §1.2
+    const s1Sum = c11Sum.plus(d12_amount);
+    await tx.budgetItem.update({ where: { id: s1.id }, data: { amount: s1Sum } });
+
+    // Budget.totalAmount = level=0 (§1 + §2) の合計
+    const total = s1Sum.plus(s2_amount);
+    await tx.budget.update({ where: { id: budget.id }, data: { totalAmount: total } });
+  });
+}
+
 async function main(): Promise<void> {
   await seedRoles();
   const adminId = await seedAdminUser();
   const customerIdByCode = await seedCustomers();
   await seedProjects(customerIdByCode, adminId);
+  await seedBudgetForFirstProject();
 }
 
 main()
