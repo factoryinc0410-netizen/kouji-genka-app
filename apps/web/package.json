@@ -23,6 +23,8 @@
   },
   "devDependencies": {
     "@kgk/config": "workspace:*",
+    "@kgk/schemas": "workspace:*",
+    "@kgk/types": "workspace:*",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^22",
     "@types/react": "^19",

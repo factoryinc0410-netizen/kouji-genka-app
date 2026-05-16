@@ -20,6 +20,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@kgk/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@kgk/types':
+        specifier: workspace:*
+        version: link:../../packages/types
       '@nestjs/common':
         specifier: ^10.4.0
         version: 10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -130,6 +136,12 @@ importers:
       '@kgk/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@kgk/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@kgk/types':
+        specifier: workspace:*
+        version: link:../../packages/types
       '@tailwindcss/postcss':
         specifier: ^4
         version: 4.3.0
@@ -150,6 +162,28 @@ importers:
         version: 5.9.3
 
   packages/config: {}
+
+  packages/schemas:
+    dependencies:
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+    devDependencies:
+      '@kgk/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
+  packages/types:
+    devDependencies:
+      '@kgk/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
 
 packages:
 
