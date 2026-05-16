@@ -85,8 +85,13 @@ export class BudgetsService {
 
   /**
    * Budget ヘッダの更新。
-   * - status を pending_approval / approved に遷移させる場合は submittedBy / approvedBy を
-   *   actor として記録する (シンプルな実装)。
+   *
+   * - **楽観ロック**: input.lockVersion が現状と一致しなければ 409 BUDGET_VERSION_MISMATCH
+   * - **編集ガード**: title / notes の変更は status === 'draft' のみ許可 (それ以外は 422
+   *   BUDGET_NOT_EDITABLE)。一方 status 変更 (T26 ワークフロー用) はガードしない。
+   * - status を pending_approval / approved に遷移させる場合は submitter / approver を
+   *   actor として記録する。
+   * - 成功時は lockVersion を +1 する。
    */
   async update(
     projectId: string,
@@ -100,6 +105,24 @@ export class BudgetsService {
     });
     if (!before) {
       throw new NotFoundException({ code: 'NOT_FOUND', message: '予算が見つかりません' });
+    }
+
+    // 楽観ロック検証
+    if (before.lockVersion !== input.lockVersion) {
+      throw new ConflictException({
+        code: 'BUDGET_VERSION_MISMATCH',
+        message: '他のユーザによって更新されています。再読込してから再度お試しください',
+        serverLockVersion: before.lockVersion,
+      });
+    }
+
+    // title / notes の編集は draft 状態のみ許可
+    const editsTitleOrNotes = input.title !== undefined || input.notes !== undefined;
+    if (editsTitleOrNotes && before.status !== 'draft') {
+      throw new UnprocessableEntityException({
+        code: 'BUDGET_NOT_EDITABLE',
+        message: 'draft 以外の予算はタイトル・備考を編集できません',
+      });
     }
 
     const data: Prisma.BudgetUpdateInput = {};
@@ -117,6 +140,7 @@ export class BudgetsService {
         data.approvedAt = new Date();
       }
     }
+    data.lockVersion = before.lockVersion + 1;
 
     const updated = await this.prisma.budget.update({ where: { id: budgetId }, data });
     await this.audit.log({
@@ -172,6 +196,7 @@ export function toPublic(b: PrismaBudget): BudgetDto {
     approvedById: b.approvedById,
     approvedAt: b.approvedAt ? b.approvedAt.toISOString() : null,
     notes: b.notes,
+    lockVersion: b.lockVersion,
     createdAt: b.createdAt.toISOString(),
     updatedAt: b.updatedAt.toISOString(),
   };
@@ -187,6 +212,7 @@ function snapshot(b: PrismaBudget) {
     submittedById: b.submittedById,
     approvedById: b.approvedById,
     notes: b.notes,
+    lockVersion: b.lockVersion,
   };
 }
 

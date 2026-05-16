@@ -19,8 +19,9 @@ import {
   type Row,
   useReactTable,
 } from '@tanstack/react-table';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui/dropdown-menu';
+import { EditableText } from '@/components/ui/editable-text';
 import { useToast } from '@/components/ui/toast';
 import { createBudgetItem, deleteBudgetItem, updateBudgetItem } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
@@ -305,7 +306,7 @@ export function BudgetTreeTable({
             ) : (
               <span className="mr-1 inline-block w-5" />
             )}
-            <EditableTextCell
+            <EditableText
               ariaLabel="コード"
               value={row.original.code}
               maxLength={50}
@@ -322,7 +323,7 @@ export function BudgetTreeTable({
         size: 280,
         cell: ({ row }) => (
           <div className="space-y-0.5">
-            <EditableTextCell
+            <EditableText
               ariaLabel="名称"
               value={row.original.name}
               required
@@ -331,7 +332,7 @@ export function BudgetTreeTable({
               onCommit={(next) => handlePatch(row.original, { name: next ?? '' })}
             />
             {row.original.kind === 'detail' ? (
-              <EditableTextCell
+              <EditableText
                 ariaLabel="仕様"
                 value={row.original.spec}
                 maxLength={2000}
@@ -381,7 +382,7 @@ export function BudgetTreeTable({
         size: 60,
         cell: ({ row }) =>
           row.original.kind === 'detail' ? (
-            <EditableTextCell
+            <EditableText
               ariaLabel="単位"
               value={row.original.unit}
               maxLength={20}
@@ -700,128 +701,6 @@ function flattenIds(nodes: BudgetItemNode[]): string[] {
   };
   walk(nodes);
   return out;
-}
-
-/**
- * テキストフィールドのインラインセル (click-to-edit)。
- * - 通常表示: テキスト + hover ハイライト (空なら emptyDisplay をプレースホルダ)
- * - クリック: <input> に切替、autofocus
- * - blur / Enter: 値を trim → 変化があれば onCommit、変化なしならそのまま閉じる
- * - Esc: 編集破棄
- * - required: 空 (trim 後 '') は無視して元の値に戻す (Service 側でも 400 になるが UI 層で吸収)
- * - 空文字は **null** として送信するので、Schema 側 `.nullable().optional()` に合う
- */
-function EditableTextCell({
-  value,
-  required,
-  maxLength,
-  emptyDisplay = '—',
-  className,
-  ariaLabel,
-  disabled,
-  onCommit,
-}: {
-  value: string | null;
-  required?: boolean;
-  maxLength: number;
-  emptyDisplay?: string;
-  className?: string;
-  ariaLabel?: string;
-  disabled?: boolean;
-  onCommit: (next: string | null) => Promise<void> | void;
-}): React.ReactElement {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value ?? '');
-  const [pending, setPending] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // 親から value が更新されたら draft を同期 (編集中/送信中でない場合に限る)
-  if (!editing && !pending && draft !== (value ?? '')) {
-    setDraft(value ?? '');
-  }
-
-  // 編集モード開始直後にフォーカス + 全選択 (autoFocus 属性は a11y 違反のため useEffect で)
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
-  }, [editing]);
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        disabled={disabled}
-        aria-label={ariaLabel}
-        onClick={() => {
-          if (disabled) return;
-          setDraft(value ?? '');
-          setEditing(true);
-        }}
-        className={
-          'w-full rounded-sm px-1 py-0.5 text-left ' +
-          (disabled
-            ? 'cursor-default'
-            : 'cursor-text hover:bg-muted/50 focus:bg-muted/50 focus:outline-none') +
-          (className ? ` ${className}` : '')
-        }
-      >
-        {value ? value : <span className="text-muted-foreground/60 italic">{emptyDisplay}</span>}
-      </button>
-    );
-  }
-
-  const commit = async (): Promise<void> => {
-    const trimmed = draft.trim();
-    if (required && trimmed === '') {
-      // 必須フィールドが空 → 編集破棄
-      setDraft(value ?? '');
-      setEditing(false);
-      return;
-    }
-    const normalized = trimmed === '' ? null : trimmed;
-    if ((normalized ?? '') === (value ?? '')) {
-      setEditing(false);
-      return;
-    }
-    setPending(true);
-    try {
-      await onCommit(normalized);
-    } finally {
-      setPending(false);
-      setEditing(false);
-    }
-  };
-
-  return (
-    <input
-      ref={inputRef}
-      type="text"
-      value={draft}
-      maxLength={maxLength}
-      aria-label={ariaLabel}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        void commit();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          (e.currentTarget as HTMLInputElement).blur();
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          setDraft(value ?? '');
-          setEditing(false);
-        }
-      }}
-      disabled={pending}
-      className={
-        'h-7 w-full rounded-sm border border-input bg-background px-1 outline-none focus:ring-1 focus:ring-input ' +
-        (className ?? '')
-      }
-    />
-  );
 }
 
 /**

@@ -6,7 +6,7 @@ import { use, useCallback, useEffect, useState } from 'react';
 import { getBudget, listBudgetItems, listBudgets } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 import { getProject } from '@/lib/api/projects';
-import { formatAmount } from '@/lib/format';
+import { BudgetHeaderEditor } from './BudgetHeaderEditor';
 import { BudgetTreeTable } from './BudgetTreeTable';
 
 /**
@@ -97,27 +97,20 @@ export default function ProjectBudgetPage({
     <div className="space-y-4">
       <BackLink projectId={projectId} />
 
-      <div className="flex items-end justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            <span className="mr-3 font-mono text-base text-muted-foreground">{project.code}</span>
-            実行予算
-          </h1>
-          {currentBudget ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              version {currentBudget.version} ／ status:{' '}
-              <span className="font-medium">{currentBudget.status}</span>
-              {currentBudget.title ? ` ／ ${currentBudget.title}` : ''}
-            </p>
-          ) : null}
-        </div>
-        <div className="text-right">
-          <div className="text-xs text-muted-foreground">合計</div>
-          <div className="text-xl font-semibold tabular-nums">
-            {currentBudget ? `${formatAmount(currentBudget.totalAmount)} 円` : '—'}
-          </div>
-        </div>
-      </div>
+      {currentBudget ? (
+        <BudgetHeaderEditor
+          project={project}
+          budget={currentBudget}
+          projectId={projectId}
+          editable={currentBudget.status === 'draft'}
+          onRefresh={() => refresh(currentBudget.id)}
+        />
+      ) : (
+        <h1 className="text-2xl font-semibold">
+          <span className="mr-3 font-mono text-base text-muted-foreground">{project.code}</span>
+          実行予算
+        </h1>
+      )}
 
       {budgets.length > 1 ? (
         <div className="flex flex-wrap items-center gap-2 text-xs">

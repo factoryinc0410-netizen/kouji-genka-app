@@ -52,6 +52,8 @@ export const BudgetSchema = z.object({
   approvedById: z.string().uuid().nullable(),
   approvedAt: z.string().datetime().nullable(),
   notes: z.string().nullable(),
+  /** 楽観ロック (UPDATE 毎に +1)。Update リクエストでは現在値を必ず返送する */
+  lockVersion: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -68,12 +70,18 @@ export type CreateBudgetRequest = z.infer<typeof CreateBudgetRequestSchema>;
 
 export const UpdateBudgetRequestSchema = z
   .object({
+    /** 楽観ロック: 必ず現状の lockVersion を返送すること */
+    lockVersion: z.number().int().nonnegative(),
     title: z.string().trim().max(200).nullable().optional(),
+    /**
+     * status 遷移は T26 ワークフロー (申請/承認) 専用ルート用。
+     * 通常編集 (title/notes) と同時に変更する用途は想定しない。
+     */
     status: BudgetStatusSchema.optional(),
     notes: z.string().trim().max(5000).nullable().optional(),
   })
-  .refine((v) => Object.values(v).some((x) => x !== undefined), {
-    message: '少なくとも 1 つのフィールドを指定してください',
+  .refine((v) => Object.entries(v).some(([k, x]) => k !== 'lockVersion' && x !== undefined), {
+    message: '少なくとも 1 つの更新フィールドを指定してください',
   });
 export type UpdateBudgetRequest = z.infer<typeof UpdateBudgetRequestSchema>;
 

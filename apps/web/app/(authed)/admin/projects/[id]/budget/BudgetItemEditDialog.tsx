@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { updateBudgetItem } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 
@@ -74,6 +75,7 @@ export function BudgetItemEditDialog({
       costElement: item.costElement ?? undefined,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
+      notes: item.notes ?? undefined,
     },
   });
 
@@ -95,6 +97,7 @@ export function BudgetItemEditDialog({
       costElement: item.costElement ?? undefined,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
+      notes: item.notes ?? undefined,
     });
   }, [item, form.reset]);
 
@@ -107,6 +110,7 @@ export function BudgetItemEditDialog({
       code: values.code === '' ? null : values.code,
       spec: values.spec === '' ? null : values.spec,
       unit: values.unit === '' ? null : values.unit,
+      notes: values.notes === '' ? null : values.notes,
     };
     // detail 以外なら 数量/単価/原価 を抜く (送ってもサーバは無視するが意図を明確に)
     if (!isDetail) {
@@ -205,6 +209,21 @@ export function BudgetItemEditDialog({
                 </div>
               </>
             ) : null}
+
+            <div className="col-span-2 space-y-2">
+              <Label htmlFor="b-notes">備考</Label>
+              <Textarea
+                id="b-notes"
+                rows={4}
+                {...form.register('notes', emptyToUndef)}
+                maxLength={5000}
+              />
+              {errors.notes ? (
+                <p className="text-xs text-destructive" role="alert">
+                  {errors.notes.message as string}
+                </p>
+              ) : null}
+            </div>
           </div>
 
           {submitError ? (

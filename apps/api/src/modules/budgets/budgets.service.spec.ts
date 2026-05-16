@@ -1,4 +1,4 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
@@ -22,6 +22,7 @@ const seedBudget = {
   approvedById: null,
   approvedAt: null,
   notes: null,
+  lockVersion: 0,
   createdAt: new Date('2026-05-16T00:00:00Z'),
   updatedAt: new Date('2026-05-16T00:00:00Z'),
   deletedAt: null,
@@ -108,6 +109,94 @@ describe('BudgetsService.create', () => {
 
 // =====================================================================
 describe('BudgetsService.update', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('title 更新成功で lockVersion が +1 され、audit に before/after', async () => {
+    const { service, prisma, audit } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue(seedBudget as never);
+    vi.mocked(prisma.budget.update).mockResolvedValue({
+      ...seedBudget,
+      title: 'v1 (改)',
+      lockVersion: 1,
+    } as never);
+
+    const dto = await service.update(
+      projectId,
+      budgetId,
+      { lockVersion: 0, title: 'v1 (改)' },
+      actorId,
+      ctx,
+    );
+
+    expect(dto.title).toBe('v1 (改)');
+    expect(dto.lockVersion).toBe(1);
+    expect(prisma.budget.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ title: 'v1 (改)', lockVersion: 1 }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'update',
+        entityType: 'budgets',
+        entityId: budgetId,
+      }),
+    );
+  });
+
+  it('notes 更新成功 (空文字 → null も受け入れ)', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue(seedBudget as never);
+    vi.mocked(prisma.budget.update).mockResolvedValue({
+      ...seedBudget,
+      notes: '監督指示 #42 に基づく',
+      lockVersion: 1,
+    } as never);
+
+    await service.update(
+      projectId,
+      budgetId,
+      { lockVersion: 0, notes: '監督指示 #42 に基づく' },
+      actorId,
+      ctx,
+    );
+
+    expect(prisma.budget.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          notes: '監督指示 #42 に基づく',
+          lockVersion: 1,
+        }),
+      }),
+    );
+  });
+
+  it('lockVersion が現状と不一致なら ConflictException(BUDGET_VERSION_MISMATCH)', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue({
+      ...seedBudget,
+      lockVersion: 5,
+    } as never);
+
+    await expect(
+      service.update(projectId, budgetId, { lockVersion: 3, title: 'x' }, actorId, ctx),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.budget.update).not.toHaveBeenCalled();
+  });
+
+  it('draft 以外で title/notes 編集は 422 BUDGET_NOT_EDITABLE', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue({
+      ...seedBudget,
+      status: 'approved',
+    } as never);
+
+    await expect(
+      service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.budget.update).not.toHaveBeenCalled();
+  });
+
   it('status を pending_approval にすると submittedBy / submittedAt が設定される', async () => {
     const { service, prisma } = build();
     vi.mocked(prisma.budget.findFirst).mockResolvedValue(seedBudget as never);
@@ -116,9 +205,16 @@ describe('BudgetsService.update', () => {
       status: 'pending_approval',
       submittedById: actorId,
       submittedAt: new Date(),
+      lockVersion: 1,
     } as never);
 
-    await service.update(projectId, budgetId, { status: 'pending_approval' }, actorId, ctx);
+    await service.update(
+      projectId,
+      budgetId,
+      { lockVersion: 0, status: 'pending_approval' },
+      actorId,
+      ctx,
+    );
 
     expect(prisma.budget.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -126,12 +222,13 @@ describe('BudgetsService.update', () => {
           status: 'pending_approval',
           submitter: { connect: { id: actorId } },
           submittedAt: expect.any(Date),
+          lockVersion: 1,
         }),
       }),
     );
   });
 
-  it('status を approved にすると approver / approvedAt が設定される', async () => {
+  it('status を approved にすると approver / approvedAt が設定される (draft 以外でも status 変更は OK)', async () => {
     const { service, prisma } = build();
     vi.mocked(prisma.budget.findFirst).mockResolvedValue({
       ...seedBudget,
@@ -144,9 +241,10 @@ describe('BudgetsService.update', () => {
       status: 'approved',
       approvedById: actorId,
       approvedAt: new Date(),
+      lockVersion: 1,
     } as never);
 
-    await service.update(projectId, budgetId, { status: 'approved' }, actorId, ctx);
+    await service.update(projectId, budgetId, { lockVersion: 0, status: 'approved' }, actorId, ctx);
 
     expect(prisma.budget.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -163,7 +261,7 @@ describe('BudgetsService.update', () => {
     const { service, prisma } = build();
     vi.mocked(prisma.budget.findFirst).mockResolvedValue(null);
     await expect(
-      service.update(projectId, budgetId, { title: 'x' }, actorId, ctx),
+      service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

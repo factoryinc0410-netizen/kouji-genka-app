@@ -195,9 +195,13 @@ test.describe
       await expect(dialog.locator('#b-unit')).toHaveValue('m3');
       await expect(dialog.locator('#b-price')).toHaveValue('1200');
 
-      // 単位 → m³、単価 → 1500 に変更
+      // 初期 notes は空
+      await expect(dialog.locator('#b-notes')).toHaveValue('');
+
+      // 単位 → m³、単価 → 1500、備考 → メモを設定
       await dialog.locator('#b-unit').fill('m³');
       await dialog.locator('#b-price').fill('1500');
+      await dialog.locator('#b-notes').fill('E2E 動作確認用メモ');
       await dialog.getByRole('button', { name: '保存' }).click();
       await expect(dialog).toBeHidden({ timeout: 5_000 });
       await waitBudgetIdle(page);
@@ -207,6 +211,15 @@ test.describe
       await expect(page.getByText('2,273,250 円')).toBeVisible({ timeout: 10_000 });
       // 単位カラムにも m³ が反映
       await expect(d111Row.locator('button[aria-label="単位"]')).toContainText('m³');
+
+      // notes が永続化されたことをダイアログ再オープンで確認
+      await d111Row.getByRole('button', { name: '行アクション' }).click();
+      await page.getByRole('menuitem', { name: '編集' }).click();
+      const dialog2 = page.getByRole('dialog');
+      await expect(dialog2).toBeVisible({ timeout: 5_000 });
+      await expect(dialog2.locator('#b-notes')).toHaveValue('E2E 動作確認用メモ');
+      await dialog2.getByRole('button', { name: 'キャンセル' }).click();
+      await expect(dialog2).toBeHidden({ timeout: 5_000 });
 
       // --- 後始末: API 直叩きで seed 値に戻す ---
       const req = page.request;
@@ -237,9 +250,78 @@ test.describe
             name: '掘削',
             unit: 'm3',
             unitPrice: '1200',
+            notes: null,
           },
         },
       );
+      expect(revertRes.ok()).toBeTruthy();
+    });
+
+    test('予算ヘッダ: タイトル inline + 備考 dialog の編集 (T30)', async ({ page }) => {
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // --- インライン編集: 予算タイトル ---
+      // 初期値は seed の "初期予算 (v1)"
+      const titleBtn = page.locator('button[aria-label="予算タイトル"]');
+      await expect(titleBtn).toContainText('初期予算 (v1)');
+      await titleBtn.click();
+      const titleInput = page.locator('input[aria-label="予算タイトル"]');
+      await titleInput.waitFor({ state: 'visible' });
+      await titleInput.fill('v1 (E2E 編集テスト)');
+      await titleInput.press('Enter');
+      // EditableText の input は commit 完了で消える (再レンダで button に戻る)
+      await titleInput.waitFor({ state: 'detached', timeout: 5_000 });
+      await expect(page.locator('button[aria-label="予算タイトル"]')).toContainText(
+        'v1 (E2E 編集テスト)',
+        { timeout: 5_000 },
+      );
+
+      // --- 備考編集ダイアログ ---
+      await page.getByRole('button', { name: '備考を編集' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible({ timeout: 5_000 });
+      // タイトル欄に最新値が入っていることを確認 (ダイアログでも編集できる)
+      await expect(dialog.locator('#bh-title')).toHaveValue('v1 (E2E 編集テスト)');
+      // notes はシード値が入っている (seed.ts: '...サンプルの内訳ツリー...')
+      await expect(dialog.locator('#bh-notes')).toHaveValue(/サンプルの内訳ツリー/);
+      // 複数行の notes に上書き
+      await dialog.locator('#bh-notes').fill('E2E:\n- 監督指示 #42\n- 仮設費を後から精算');
+      await dialog.getByRole('button', { name: '保存' }).click();
+      await expect(dialog).toBeHidden({ timeout: 5_000 });
+
+      // notes プレビューが新しい内容に更新される
+      const preview = page.locator('[data-testid="budget-notes-preview"]');
+      await expect(preview).toBeVisible({ timeout: 5_000 });
+      await expect(preview).toContainText('監督指示 #42');
+
+      // --- 後始末: API 直叩きで title/notes を seed 値に戻す ---
+      const req = page.request;
+      const loginRes = await req.post(`${API_BASE}/auth/login`, {
+        data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+      });
+      expect(loginRes.ok()).toBeTruthy();
+      const projects = (await (await req.get(`${API_BASE}/projects`)).json()) as {
+        items: Array<{ id: string; code: string }>;
+      };
+      const project = projects.items.find((p) => p.code === '2026-001');
+      if (!project) throw new Error('seed project 2026-001 missing');
+      const budgets = (await (
+        await req.get(`${API_BASE}/projects/${project.id}/budgets`)
+      ).json()) as { items: Array<{ id: string; lockVersion: number }> };
+      const budget = budgets.items[0];
+      if (!budget) throw new Error('seed budget missing');
+      const revertRes = await req.patch(`${API_BASE}/projects/${project.id}/budgets/${budget.id}`, {
+        data: {
+          lockVersion: budget.lockVersion,
+          title: '初期予算 (v1)',
+          notes: 'シードデータ: サンプルの内訳ツリー (土工事 / 鉄筋 / 共通仮設費)',
+        },
+      });
       expect(revertRes.ok()).toBeTruthy();
     });
   });
