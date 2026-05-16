@@ -59,11 +59,25 @@
       "semicolons": "always",
       "trailingCommas": "all",
       "arrowParentheses": "always"
+    },
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": true
     }
   },
   "json": {
     "formatter": {
       "trailingCommas": "none"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["apps/api/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": { "useImportType": "off" },
+          "correctness": { "noUnusedFunctionParameters": "off" }
+        }
+      }
+    }
+  ]
 }
