@@ -45,6 +45,8 @@ export default function AuthedLayout({
       <div className="flex flex-1">
         <aside className="w-56 border-r bg-card p-4">
           <nav className="space-y-1 text-sm">
+            <SidebarLink href="/projects">工事一覧</SidebarLink>
+            <SidebarLink href="/admin/projects">工事管理</SidebarLink>
             <SidebarLink href="/admin/users">ユーザ管理</SidebarLink>
           </nav>
         </aside>
