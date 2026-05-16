@@ -216,6 +216,27 @@ pnpm test
 pnpm test:e2e
 ```
 
+### Playwright (E2E) の初回セットアップ
+
+Playwright はブラウザバイナリとそのシステム依存ライブラリ (libnss / libxkbcommon 等) を別途必要とする。
+
+```bash
+# 1) ブラウザ本体 (Chromium) のダウンロード
+pnpm --filter @kgk/web exec playwright install chromium
+
+# 2) システム依存ライブラリのインストール (要 sudo / Ubuntu/Debian 系)
+sudo pnpm --filter @kgk/web exec playwright install-deps chromium
+# あるいは自分で apt 経由
+sudo apt-get install -y libnss3 libnspr4 libdbus-1-3 libatk1.0-0 \
+  libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+  libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
+  libasound2t64
+```
+
+- WSL / 開発サーバ等で **sudo が使えない** 場合は `playwright install-deps` は失敗するため、上記 apt パッケージを管理者に入れてもらう。
+- ブラウザ本体だけは `~/.cache/ms-playwright/` にユーザ権限でダウンロードされるので sudo 不要。
+- GitHub Actions では `--with-deps` フラグで CI ステップ内で自動インストール (`.github/workflows/ci.yml` 参照)。
+
 ---
 
 ## トラブル時の参照先
