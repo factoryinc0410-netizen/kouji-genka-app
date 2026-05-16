@@ -1,0 +1,51 @@
+name: kgk
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: kgk-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kgk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kgk_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-kgk}
+      TZ: Asia/Tokyo
+      PGTZ: Asia/Tokyo
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - kgk-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-kgk} -d ${POSTGRES_DB:-kgk}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: kgk-redis
+    command:
+      - redis-server
+      - --save
+      - "60"
+      - "1"
+      - --loglevel
+      - warning
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - kgk-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  kgk-pgdata:
+    name: kgk-pgdata
+  kgk-redisdata:
+    name: kgk-redisdata
