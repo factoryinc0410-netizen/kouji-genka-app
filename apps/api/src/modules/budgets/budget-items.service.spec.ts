@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { AuditService } from '../audit/audit.service';
 import { BudgetItemsService } from './budget-items.service';
+import type { BudgetsService } from './budgets.service';
 
 const actorId = '01900000-0000-7000-8000-00000000aaaa';
 const projectId = '01900000-0000-7000-8000-00000000bbbb';
@@ -60,7 +61,13 @@ function build() {
     },
   } as unknown as PrismaService;
   const audit = { log: vi.fn().mockResolvedValue(undefined) } as unknown as AuditService;
-  return { service: new BudgetItemsService(prisma, audit), prisma, audit };
+  // T34: BudgetsService.ensureProjectAllowsAction を mock。
+  // デフォルトは「OK (in_progress 想定)」、PROJECT_NOT_EDITABLE をテストする場合は
+  // 各テストで budgets.ensureProjectAllowsAction.mockRejectedValueOnce(...) で上書き。
+  const budgets = {
+    ensureProjectAllowsAction: vi.fn().mockResolvedValue(undefined),
+  } as unknown as BudgetsService;
+  return { service: new BudgetItemsService(prisma, audit, budgets), prisma, audit, budgets };
 }
 
 // =====================================================================
@@ -518,4 +525,52 @@ describe('BudgetItemsService draft ガード', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   }
+});
+
+// =====================================================================
+// T34: 工事ステータスガード — project.status が completed/billing/closed なら
+//       budget.status='draft' であっても CRUD/DnD は拒否される
+// =====================================================================
+describe('BudgetItemsService project-status ガード (T34)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    'completed',
+    'billing',
+    'closed',
+  ] as const)('create: project.status=%s なら 422 PROJECT_NOT_EDITABLE (budget は draft でも拒否)', async (projectStatus) => {
+    const { service, prisma, budgets } = build();
+    // BudgetsService.ensureProjectAllowsAction が PROJECT_NOT_EDITABLE を throw
+    vi.mocked(budgets.ensureProjectAllowsAction).mockRejectedValueOnce(
+      new UnprocessableEntityException({
+        code: 'PROJECT_NOT_EDITABLE',
+        message: `工事ステータスが ${projectStatus} のため、予算の編集はできません`,
+      }),
+    );
+    await expect(
+      service.create(projectId, budgetId, { kind: 'detail', name: 'X' }, actorId, ctx),
+    ).rejects.toMatchObject({ response: { code: 'PROJECT_NOT_EDITABLE' } });
+    // project ガードで先に落ちるので budget の findFirst は呼ばれない
+    expect(prisma.budget.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('update: project ガードが先、続けて budget ガードという順序', async () => {
+    const { service, budgets } = build();
+    vi.mocked(budgets.ensureProjectAllowsAction).mockRejectedValueOnce(
+      new UnprocessableEntityException({ code: 'PROJECT_NOT_EDITABLE', message: 'x' }),
+    );
+    await expect(
+      service.update(projectId, budgetId, itemId, { lockVersion: 0, quantity: '1' }, actorId, ctx),
+    ).rejects.toMatchObject({ response: { code: 'PROJECT_NOT_EDITABLE' } });
+  });
+
+  it('softDelete: project.status=closed → 422', async () => {
+    const { service, budgets } = build();
+    vi.mocked(budgets.ensureProjectAllowsAction).mockRejectedValueOnce(
+      new UnprocessableEntityException({ code: 'PROJECT_NOT_EDITABLE', message: 'x' }),
+    );
+    await expect(
+      service.softDelete(projectId, budgetId, itemId, 0, actorId, ctx),
+    ).rejects.toMatchObject({ response: { code: 'PROJECT_NOT_EDITABLE' } });
+  });
 });

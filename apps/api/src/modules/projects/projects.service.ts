@@ -1,15 +1,17 @@
-import type {
-  ConstructionType,
-  CreateProjectRequest,
-  ListProjectsQuery,
-  ListProjectsResponse,
-  Project as ProjectDto,
-  ProjectStatus,
-  ProjectType,
-  UpdateProjectRequest,
+import {
+  type ConstructionType,
+  type CreateProjectRequest,
+  classifyProjectTransition,
+  type ListProjectsQuery,
+  type ListProjectsResponse,
+  type Project as ProjectDto,
+  type ProjectStatus,
+  type ProjectType,
+  type UpdateProjectRequest,
 } from '@kgk/schemas';
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
@@ -143,9 +145,16 @@ export class ProjectsService {
 
   /**
    * 更新。
-   * - status が現状と異なる場合は projects と project_status_history を
-   *   同一トランザクションで更新する (changed_by_id = actorId)。
-   * - code 重複 → 409、customer/manager FK 違反 → 422。
+   *
+   * status 変更時の業務ルール (T34):
+   * - **forward** (PROJECT_STATUS_FORWARD_TRANSITIONS): 通常運用、admin 不要、reason 任意
+   * - **backward** (PROJECT_STATUS_BACKWARD_TRANSITIONS): admin 限定 + statusReason 必須
+   *   - 非 admin: 403 PROJECT_BACKWARD_FORBIDDEN
+   *   - reason 空: 422 PROJECT_STATUS_REASON_REQUIRED
+   * - **2 段飛ばし / 完全に不正な遷移**: 422 INVALID_PROJECT_STATUS_TRANSITION
+   *
+   * 履歴は projects 更新と project_status_history への記録を同一トランザクションで行い、
+   * audit_logs.after には `statusChange = { from, to, reason }` を discriminator として付与。
    */
   async update(
     id: string,
@@ -156,6 +165,40 @@ export class ProjectsService {
     const before = await this.prisma.project.findFirst({ where: { id, deletedAt: null } });
     if (!before) {
       throw new NotFoundException({ code: 'NOT_FOUND', message: '工事が見つかりません' });
+    }
+
+    const statusChanging = input.status !== undefined && input.status !== before.status;
+
+    // 遷移ルール検証 (status を変更する場合のみ)
+    if (statusChanging && input.status) {
+      const kind = classifyProjectTransition(before.status as ProjectStatus, input.status);
+      if (kind === 'invalid') {
+        throw new UnprocessableEntityException({
+          code: 'INVALID_PROJECT_STATUS_TRANSITION',
+          message: `${before.status} → ${input.status} の遷移は許可されていません (2 段飛ばし等)`,
+        });
+      }
+      if (kind === 'backward') {
+        // admin role 検証 (Service 層で取り直す — controller の @Roles では「変更内容により
+        // 必要 role が変わる」ケースをカバーできないため)
+        const actor = await this.prisma.user.findFirst({
+          where: { id: actorId },
+          select: { role: { select: { code: true } } },
+        });
+        if (actor?.role.code !== 'admin') {
+          throw new ForbiddenException({
+            code: 'PROJECT_BACKWARD_FORBIDDEN',
+            message: '後戻り遷移は admin 権限が必要です',
+          });
+        }
+        const reason = input.statusReason?.trim() ?? '';
+        if (reason.length === 0) {
+          throw new UnprocessableEntityException({
+            code: 'PROJECT_STATUS_REASON_REQUIRED',
+            message: '後戻り遷移には理由 (statusReason) が必須です',
+          });
+        }
+      }
     }
 
     const data: Prisma.ProjectUpdateInput = {};
@@ -188,8 +231,6 @@ export class ProjectsService {
     }
     if (input.notes !== undefined) data.notes = input.notes;
 
-    const statusChanging = input.status !== undefined && input.status !== before.status;
-
     try {
       const updated = await this.prisma.$transaction(async (tx) => {
         const project = await tx.project.update({ where: { id }, data });
@@ -207,13 +248,23 @@ export class ProjectsService {
         return project;
       });
 
+      // audit_logs に statusChange discriminator を埋め込む (T26 workflowAction 方式)
+      const after: Record<string, unknown> = snapshot(updated);
+      if (statusChanging) {
+        after.statusChange = {
+          from: before.status,
+          to: updated.status,
+          reason: input.statusReason ?? null,
+        };
+      }
+
       await this.audit.log({
         action: 'update',
         userId: actorId,
         entityType: 'projects',
         entityId: id,
         before: snapshot(before),
-        after: snapshot(updated),
+        after,
         ...ctx,
       });
       return toPublic(updated);

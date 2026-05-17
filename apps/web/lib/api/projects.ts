@@ -3,6 +3,7 @@ import type {
   ListProjectsQuery,
   ListProjectsResponse,
   ProjectResponse,
+  ProjectStatusHistoryResponse,
   UpdateProjectRequest,
 } from '@kgk/schemas';
 import { apiFetch } from './client';
@@ -43,4 +44,12 @@ export function updateProject(id: string, input: UpdateProjectRequest): Promise<
 
 export function deleteProject(id: string): Promise<void> {
   return apiFetch<void>(`/projects/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * T34: 工事ステータス遷移履歴を時系列 (changedAt asc) で取得。
+ * GET /projects/:id/status-history (view 権限)
+ */
+export function getProjectStatusHistory(id: string): Promise<ProjectStatusHistoryResponse> {
+  return apiFetch<ProjectStatusHistoryResponse>(`/projects/${id}/status-history`);
 }

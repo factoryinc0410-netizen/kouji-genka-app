@@ -1,6 +1,11 @@
 'use client';
 
-import type { Budget } from '@kgk/schemas';
+import {
+  type Budget,
+  PROJECT_ALLOWS_BUDGET_REVISE,
+  PROJECT_ALLOWS_BUDGET_WORKFLOW,
+  type ProjectStatus,
+} from '@kgk/schemas';
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
@@ -28,6 +33,12 @@ import { BudgetRejectDialog } from './BudgetRejectDialog';
 interface Props {
   projectId: string;
   budget: Budget;
+  /**
+   * T34: 工事ステータス。マトリクス (PROJECT_ALLOWS_BUDGET_WORKFLOW / REVISE) で
+   * ボタンの非表示を制御する。バックエンドでもガード済 (PROJECT_NOT_EDITABLE) だが、
+   * UI 上でも先にボタンを消すことで誤操作を抑止する。
+   */
+  projectStatus: ProjectStatus;
   onRefresh: () => Promise<void> | void;
   /** 改定成功時に新 budget id へ切替するためのコールバック */
   onSwitchBudget: (newBudgetId: string) => Promise<void> | void;
@@ -36,6 +47,7 @@ interface Props {
 export function BudgetWorkflowActions({
   projectId,
   budget,
+  projectStatus,
   onRefresh,
   onSwitchBudget,
 }: Props): React.ReactElement | null {
@@ -141,17 +153,23 @@ export function BudgetWorkflowActions({
     });
   }, [projectId, budget.id, budget.lockVersion, run, toast, onSwitchBudget]);
 
+  // T34: 工事ステータスに応じたガード
+  // - workflow (submit/approve/reject): completed まで OK、billing/closed で停止
+  // - revise: in_progress / bidding のみ。completed では新版起こし不可
+  const workflowAllowed = PROJECT_ALLOWS_BUDGET_WORKFLOW.has(projectStatus);
+  const reviseAllowed = PROJECT_ALLOWS_BUDGET_REVISE.has(projectStatus);
+
   // ボタン群
   const buttons: React.ReactElement[] = [];
 
-  if (budget.status === 'draft') {
+  if (budget.status === 'draft' && workflowAllowed) {
     buttons.push(
       <Button key="submit" size="sm" onClick={handleSubmit} disabled={pending}>
         申請する
       </Button>,
     );
   }
-  if (budget.status === 'pending_approval' && isAdmin) {
+  if (budget.status === 'pending_approval' && isAdmin && workflowAllowed) {
     buttons.push(
       <Button key="approve" size="sm" onClick={handleApprove} disabled={pending}>
         承認する
@@ -167,7 +185,7 @@ export function BudgetWorkflowActions({
       </Button>,
     );
   }
-  if (budget.status === 'approved') {
+  if (budget.status === 'approved' && reviseAllowed) {
     buttons.push(
       <Button key="revise" size="sm" variant="outline" onClick={handleRevise} disabled={pending}>
         改定して新版を作成

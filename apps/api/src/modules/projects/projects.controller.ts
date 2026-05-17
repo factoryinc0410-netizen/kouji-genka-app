@@ -29,6 +29,7 @@ import { RequireProjectAccess } from '../auth/project-access.decorator';
 import { ProjectAccessGuard } from '../auth/project-access.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { ProjectStatusHistoryService } from './project-status-history.service';
 import { ProjectsService } from './projects.service';
 
 /**
@@ -42,7 +43,10 @@ import { ProjectsService } from './projects.service';
 @Controller('projects')
 @UseGuards(AuthGuard, RolesGuard, ProjectAccessGuard)
 export class ProjectsController {
-  constructor(private readonly projects: ProjectsService) {}
+  constructor(
+    private readonly projects: ProjectsService,
+    private readonly statusHistory: ProjectStatusHistoryService,
+  ) {}
 
   @Get()
   list(
@@ -57,6 +61,17 @@ export class ProjectsController {
   async getOne(@Param('id', ParseUUIDPipe) id: string) {
     const project = await this.projects.getById(id);
     return { project };
+  }
+
+  /**
+   * T34: ステータス遷移履歴。閲覧権限のみ (view) で取得可能。
+   * project_status_history を changedAt 昇順で返す。
+   */
+  @Get(':id/status-history')
+  @RequireProjectAccess('view')
+  async history(@Param('id', ParseUUIDPipe) id: string) {
+    const items = await this.statusHistory.listHistory(id);
+    return { items, total: items.length };
   }
 
   @Post()

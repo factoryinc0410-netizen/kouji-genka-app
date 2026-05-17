@@ -1,10 +1,14 @@
-import type {
-  Budget as BudgetDto,
-  BudgetStatus,
-  CreateBudgetRequest,
-  ListBudgetsResponse,
-  RejectBudgetRequest,
-  UpdateBudgetRequest,
+import {
+  type Budget as BudgetDto,
+  type BudgetStatus,
+  type CreateBudgetRequest,
+  type ListBudgetsResponse,
+  PROJECT_ALLOWS_BUDGET_EDIT,
+  PROJECT_ALLOWS_BUDGET_REVISE,
+  PROJECT_ALLOWS_BUDGET_WORKFLOW,
+  type ProjectStatus,
+  type RejectBudgetRequest,
+  type UpdateBudgetRequest,
 } from '@kgk/schemas';
 import {
   ConflictException,
@@ -15,6 +19,28 @@ import {
 import type { Prisma, Budget as PrismaBudget } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { type AuditContext, AuditService } from '../audit/audit.service';
+
+/**
+ * T34: 配下 budget の各 action 可否は project.status に依存する。
+ * - 'edit'     : Budget.update / BudgetItem CRUD / DnD
+ * - 'workflow' : submit / approve / reject
+ * - 'revise'   : 新 draft 起こし直し
+ *
+ * 詳細マトリクスは PROJECT_ALLOWS_BUDGET_* (packages/schemas/src/projects.ts) を参照。
+ */
+type BudgetAction = 'edit' | 'workflow' | 'revise';
+
+const ACTION_ALLOWED: Record<BudgetAction, ReadonlySet<ProjectStatus>> = {
+  edit: PROJECT_ALLOWS_BUDGET_EDIT,
+  workflow: PROJECT_ALLOWS_BUDGET_WORKFLOW,
+  revise: PROJECT_ALLOWS_BUDGET_REVISE,
+};
+
+const ACTION_LABEL: Record<BudgetAction, string> = {
+  edit: '編集',
+  workflow: '申請/承認/差戻し',
+  revise: '改定',
+};
 
 @Injectable()
 export class BudgetsService {
@@ -87,6 +113,7 @@ export class BudgetsService {
   /**
    * Budget ヘッダの更新 (title / notes のみ)。
    *
+   * - **工事ステータスガード (T34)**: project.status ∈ {completed, billing, closed} なら 422
    * - **楽観ロック**: input.lockVersion が現状と一致しなければ 409 BUDGET_VERSION_MISMATCH
    * - **編集ガード**: status === 'draft' のみ許可 (それ以外は 422 BUDGET_NOT_EDITABLE)
    * - **status 変更は本メソッドでは扱わない** → submit/approve/reject/revise の専用 API
@@ -99,6 +126,8 @@ export class BudgetsService {
     actorId: string,
     ctx: AuditContext,
   ): Promise<BudgetDto> {
+    await this.ensureProjectAllowsAction(projectId, 'edit');
+
     const before = await this.prisma.budget.findFirst({
       where: { id: budgetId, projectId, deletedAt: null },
     });
@@ -229,6 +258,9 @@ export class BudgetsService {
     actorId: string,
     ctx: AuditContext,
   ): Promise<BudgetDto> {
+    // T34: 工事ステータスが completed/billing/closed では改定不可
+    await this.ensureProjectAllowsAction(projectId, 'revise');
+
     const { newBudget, oldSnapshot, newSnapshot } = await this.prisma.$transaction(async (tx) => {
       const before = await tx.budget.findFirst({
         where: { id: budgetId, projectId, deletedAt: null },
@@ -349,6 +381,9 @@ export class BudgetsService {
       reason?: string;
     },
   ): Promise<BudgetDto> {
+    // T34: 工事ステータスが billing/closed では workflow も停止
+    await this.ensureProjectAllowsAction(projectId, 'workflow');
+
     const before = await this.prisma.budget.findFirst({
       where: { id: budgetId, projectId, deletedAt: null },
     });
@@ -385,6 +420,32 @@ export class BudgetsService {
       ...ctx,
     });
     return toPublic(updated);
+  }
+
+  /**
+   * T34: 配下 budget の指定 action が現工事ステータスで許可されているかを検証。
+   *
+   * - 工事 (project) が存在しない / 論理削除済 → 404 NOT_FOUND
+   * - action が許可されていない status → 422 PROJECT_NOT_EDITABLE
+   *
+   * 呼出箇所:
+   *   update / revise / transition (= submit/approve/reject) / BudgetItemsService 入口
+   */
+  async ensureProjectAllowsAction(projectId: string, action: BudgetAction): Promise<void> {
+    const project = await this.prisma.project.findFirst({
+      where: { id: projectId, deletedAt: null },
+      select: { status: true },
+    });
+    if (!project) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: '工事が見つかりません' });
+    }
+    const status = project.status as ProjectStatus;
+    if (!ACTION_ALLOWED[action].has(status)) {
+      throw new UnprocessableEntityException({
+        code: 'PROJECT_NOT_EDITABLE',
+        message: `工事ステータスが ${status} のため、予算の${ACTION_LABEL[action]}はできません`,
+      });
+    }
   }
 
   /** 論理削除 (admin 専用、controller で @Roles 制御) */

@@ -47,7 +47,8 @@ test.describe
       await dialog.locator('#p-amount').fill('250000000');
       await expect(dialog.locator('#p-amount')).toHaveValue('250,000,000');
 
-      await dialog.locator('#p-status').selectOption('in_progress');
+      // T34: status は通常編集フォームから disabled。新規作成時は default の bidding のまま、
+      // 着工後に詳細ページのワークフローボタンから in_progress 等へ遷移する想定。
       await dialog.locator('#p-type').selectOption('private');
       await dialog.locator('#p-ctype').selectOption('building');
 

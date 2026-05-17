@@ -154,6 +154,7 @@ export function BudgetHeaderEditor({
           <BudgetWorkflowActions
             projectId={projectId}
             budget={budget}
+            projectStatus={project.status}
             onRefresh={onRefresh}
             onSwitchBudget={onSwitchBudget}
           />

@@ -324,10 +324,20 @@ function FormFields({ form, customers, includeCustomerSelector }: FormFieldsProp
 
       <div className="space-y-2">
         <Label htmlFor="p-status">ステータス</Label>
+        {/*
+          T34: ステータス変更は工事詳細ページの「専用ボタン群」(ProjectStatusActions)
+          に集約。理由 (statusReason) の取得や backward の admin 検証を確実に行うため、
+          この通常編集フォームでは status を read-only にする。
+          - mode='create' では submit 時に送られる必要があるため `disabled` ではなく
+            外観のみグレーアウト + tab-index を切るに留める想定だが、create は bidding
+            固定で OK なので disabled でよい (Service 側は status 省略を受理する)。
+        */}
         <select
           id="p-status"
           {...register('status')}
-          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          disabled
+          aria-describedby="p-status-help"
+          className="h-9 w-full rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground"
         >
           {PROJECT_STATUSES.map((s) => (
             <option key={s} value={s}>
@@ -335,6 +345,10 @@ function FormFields({ form, customers, includeCustomerSelector }: FormFieldsProp
             </option>
           ))}
         </select>
+        <p id="p-status-help" className="text-xs text-muted-foreground">
+          ステータスは工事詳細ページの「ステータス変更ボタン」から変更してください
+          (理由の記録と差戻し権限の検証を行うため)。
+        </p>
       </div>
 
       <div className="space-y-2">

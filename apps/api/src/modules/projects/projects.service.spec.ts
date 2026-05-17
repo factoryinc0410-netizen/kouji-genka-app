@@ -48,6 +48,10 @@ function build() {
     projectStatusHistory: {
       create: vi.fn(),
     },
+    // T34: backward 遷移時の admin role lookup 用。デフォルトは admin OK。
+    user: {
+      findFirst: vi.fn().mockResolvedValue({ role: { code: 'admin' } }),
+    },
   } as unknown as PrismaService;
   const audit = { log: vi.fn().mockResolvedValue(undefined) } as unknown as AuditService;
   const access = {
@@ -344,6 +348,131 @@ describe('ProjectsService.update', () => {
     expect(txUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ manager: { disconnect: true } }),
+      }),
+    );
+  });
+});
+
+// =====================================================================
+// T34: 工事ステータス遷移ルール (forward / backward / invalid)
+// =====================================================================
+describe('ProjectsService.update — T34 transition rules', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('forward (in_progress → completed) は admin/reason 不要、audit.after に statusChange を付与', async () => {
+    const { service, prisma, audit } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue(seedProject as never); // in_progress
+    const updated = { ...seedProject, status: 'completed' as const };
+    mockTxCallback(prisma, {
+      project: { update: vi.fn().mockResolvedValue(updated) },
+      projectStatusHistory: { create: vi.fn() },
+    });
+
+    await service.update(projectId, { status: 'completed' }, actorId, ctx);
+
+    // backward でないので user role lookup は呼ばれない
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    // audit.after に statusChange discriminator が付与
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({
+          statusChange: { from: 'in_progress', to: 'completed', reason: null },
+        }),
+      }),
+    );
+  });
+
+  it('invalid (bidding → completed の 2 段飛ばし) は INVALID_PROJECT_STATUS_TRANSITION', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue({
+      ...seedProject,
+      status: 'bidding',
+    } as never);
+    await expect(
+      service.update(projectId, { status: 'completed' }, actorId, ctx),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('backward (completed → in_progress) で admin かつ reason あり → 成功', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue({
+      ...seedProject,
+      status: 'completed',
+    } as never);
+    vi.mocked(prisma.user.findFirst).mockResolvedValue({
+      role: { code: 'admin' },
+    } as never);
+    mockTxCallback(prisma, {
+      project: {
+        update: vi.fn().mockResolvedValue({ ...seedProject, status: 'in_progress' as const }),
+      },
+      projectStatusHistory: { create: vi.fn() },
+    });
+
+    await service.update(
+      projectId,
+      { status: 'in_progress', statusReason: '竣工取消 — 追加工事発生' },
+      actorId,
+      ctx,
+    );
+    expect(prisma.user.findFirst).toHaveBeenCalled();
+  });
+
+  it('backward で reason 空 → 422 PROJECT_STATUS_REASON_REQUIRED', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue({
+      ...seedProject,
+      status: 'completed',
+    } as never);
+    vi.mocked(prisma.user.findFirst).mockResolvedValue({
+      role: { code: 'admin' },
+    } as never);
+
+    await expect(
+      service.update(projectId, { status: 'in_progress' }, actorId, ctx),
+    ).rejects.toMatchObject({
+      response: { code: 'PROJECT_STATUS_REASON_REQUIRED' },
+    });
+  });
+
+  it('backward で non-admin (planner) → 403 PROJECT_BACKWARD_FORBIDDEN', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue({
+      ...seedProject,
+      status: 'completed',
+    } as never);
+    vi.mocked(prisma.user.findFirst).mockResolvedValue({
+      role: { code: 'planner' },
+    } as never);
+
+    await expect(
+      service.update(projectId, { status: 'in_progress', statusReason: '差戻し' }, actorId, ctx),
+    ).rejects.toMatchObject({
+      response: { code: 'PROJECT_BACKWARD_FORBIDDEN' },
+    });
+  });
+
+  it('forward でも reason を指定したら history.reason に格納される', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue(seedProject as never);
+    const txHistoryCreate = vi.fn();
+    mockTxCallback(prisma, {
+      project: {
+        update: vi.fn().mockResolvedValue({ ...seedProject, status: 'completed' as const }),
+      },
+      projectStatusHistory: { create: txHistoryCreate },
+    });
+
+    await service.update(
+      projectId,
+      { status: 'completed', statusReason: '社内検収完了' },
+      actorId,
+      ctx,
+    );
+
+    expect(txHistoryCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: '社内検収完了' }),
       }),
     );
   });

@@ -16,12 +16,14 @@ import { Prisma, type BudgetItem as PrismaBudgetItem } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { type AuditContext, AuditService } from '../audit/audit.service';
 import { calcLeafAmount, rollUpFromParent, type Tx } from './budget-rollup';
+import { BudgetsService } from './budgets.service';
 
 @Injectable()
 export class BudgetItemsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly budgets: BudgetsService,
   ) {}
 
   // -----------------------------------------------------------------
@@ -364,12 +366,21 @@ export class BudgetItemsService {
   // -----------------------------------------------------------------
 
   /**
-   * 指定 budget が project に属し、論理削除されていないかを検証 + draft ガード。
+   * 指定 budget が project に属し、論理削除されていないかを検証 + 編集ガード。
    *
-   * **承認済 / 申請中 / 旧版 (superseded) の予算に対する明細編集はすべて 422 で拒否**。
-   * これにより T26 ワークフロー後にデータが不変であることを保証する。
+   * 2 段階のガード:
+   *   1. **工事ステータスガード (T34)**: project.status ∈ {completed, billing, closed}
+   *      なら 422 PROJECT_NOT_EDITABLE
+   *   2. **予算ステータスガード (T26)**: budget.status !== 'draft' なら 422 BUDGET_NOT_EDITABLE
+   *
+   * これにより、承認済 / 申請中 / 旧版 (superseded) の予算 + 工事クローズ後の
+   * 予算 のいずれに対する明細編集 (create/update/softDelete/DnD) もすべて拒否。
    */
   private async ensureBudgetEditable(projectId: string, budgetId: string): Promise<void> {
+    // 1) 工事ステータスのガード (project が存在しない場合もここで 404)
+    await this.budgets.ensureProjectAllowsAction(projectId, 'edit');
+
+    // 2) 予算ステータスのガード
     const budget = await this.prisma.budget.findFirst({
       where: { id: budgetId, projectId, deletedAt: null },
       select: { id: true, status: true },

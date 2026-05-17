@@ -10,6 +10,77 @@ export const PROJECT_STATUSES = [
 export const ProjectStatusSchema = z.enum(PROJECT_STATUSES);
 export type ProjectStatus = z.infer<typeof ProjectStatusSchema>;
 
+// =====================================================================
+// T34: 工事ステータス遷移ルール
+//
+// 設計判断 (詳細はチケット T34 計画書):
+// - forward: 通常運用の前進 (受注 → 着工 → 完工 → 請求 → 完了)
+// - backward: 差戻し / 取消 (admin 限定 + reason 必須、Service 層で強制)
+// - 2 段飛ばし禁止: forward のリストに連続性を埋め込む
+// - 配下 budget の編集可否は action 別マトリクス (下記 3 つの Set)
+// =====================================================================
+
+/** 前進可能な遷移先 (admin 不要) */
+export const PROJECT_STATUS_FORWARD_TRANSITIONS: Record<ProjectStatus, readonly ProjectStatus[]> = {
+  bidding: ['in_progress'],
+  in_progress: ['completed', 'closed'],
+  completed: ['billing'],
+  billing: ['closed'],
+  closed: [],
+};
+
+/** 後戻り遷移 — admin 限定 + statusReason 必須 (Service 層で強制) */
+export const PROJECT_STATUS_BACKWARD_TRANSITIONS: Record<ProjectStatus, readonly ProjectStatus[]> =
+  {
+    bidding: [],
+    in_progress: ['bidding'],
+    completed: ['in_progress'],
+    billing: ['completed'],
+    closed: ['billing', 'completed'],
+  };
+
+/**
+ * 指定遷移が forward / backward のどちらか、あるいは禁止かを判定。
+ * - 'forward':  通常運用、admin 不要
+ * - 'backward': 後戻り、admin + reason 必須
+ * - 'invalid':  2 段飛ばし等、完全に禁止
+ * - 'noop':     from === to
+ */
+export function classifyProjectTransition(
+  from: ProjectStatus,
+  to: ProjectStatus,
+): 'forward' | 'backward' | 'invalid' | 'noop' {
+  if (from === to) return 'noop';
+  if (PROJECT_STATUS_FORWARD_TRANSITIONS[from].includes(to)) return 'forward';
+  if (PROJECT_STATUS_BACKWARD_TRANSITIONS[from].includes(to)) return 'backward';
+  return 'invalid';
+}
+
+/**
+ * 配下 budget の編集可否マトリクス (T34 設計判断 D)。
+ *
+ * | project.status | edit | workflow | revise |
+ * |---|---|---|---|
+ * | bidding        |  ○   |    ○     |   ○    |
+ * | in_progress    |  ○   |    ○     |   ○    |
+ * | completed      |  ✗   |    ○     |   ✗    |
+ * | billing        |  ✗   |    ✗     |   ✗    |
+ * | closed         |  ✗   |    ✗     |   ✗    |
+ */
+export const PROJECT_ALLOWS_BUDGET_EDIT: ReadonlySet<ProjectStatus> = new Set([
+  'bidding',
+  'in_progress',
+]);
+export const PROJECT_ALLOWS_BUDGET_WORKFLOW: ReadonlySet<ProjectStatus> = new Set([
+  'bidding',
+  'in_progress',
+  'completed',
+]);
+export const PROJECT_ALLOWS_BUDGET_REVISE: ReadonlySet<ProjectStatus> = new Set([
+  'bidding',
+  'in_progress',
+]);
+
 export const PROJECT_TYPES = ['public', 'private'] as const;
 export const ProjectTypeSchema = z.enum(PROJECT_TYPES);
 export type ProjectType = z.infer<typeof ProjectTypeSchema>;
@@ -89,11 +160,36 @@ export const UpdateProjectRequestSchema = z
     constructionType: ConstructionTypeSchema.optional(),
     managerUserId: z.string().uuid().nullable().optional(),
     notes: z.string().trim().max(5000).nullable().optional(),
-    /** status が変わる場合に履歴へ記録する理由 (任意) */
+    /**
+     * status が変わる場合に履歴へ記録する理由。
+     * - **forward 遷移**: 任意
+     * - **backward 遷移** (後戻り): 必須 + admin 限定 (Service 層で強制)
+     *   ※ before.status を input 単体では知れないため、schema 側では「statusReason
+     *      指定時の最低 1 文字」のみ保証。真の backward 判定は ProjectsService 側。
+     */
     statusReason: z.string().trim().max(500).optional(),
   })
   .refine((v) => Object.entries(v).some(([k, x]) => k !== 'statusReason' && x !== undefined), {
     message: '少なくとも 1 つのフィールドを指定してください',
+  })
+  .superRefine((v, ctx) => {
+    // statusReason は status とセットで意味を持つ — status 未指定で reason だけ来たら弾く
+    if (v.statusReason !== undefined && v.status === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['statusReason'],
+        message: 'statusReason は status を変更する場合のみ指定できます',
+      });
+    }
+    // 指定された statusReason が空白文字のみなら、未指定と区別できないため弾く
+    // (Service 層の「backward なら reason 必須」検証を確実に発火させるため)
+    if (v.statusReason !== undefined && v.statusReason.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['statusReason'],
+        message: 'statusReason を空文字で送らないでください (省略するか、1 文字以上で指定)',
+      });
+    }
   });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequestSchema>;
 
@@ -122,6 +218,7 @@ export const ProjectResponseSchema = z.object({ project: ProjectSchema });
 export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
 
 export const ProjectStatusHistoryEntrySchema = z.object({
+  /** BigInt → string (精度ロス防止) */
   id: z.string(),
   projectId: z.string().uuid(),
   fromStatus: ProjectStatusSchema.nullable(),
@@ -129,5 +226,13 @@ export const ProjectStatusHistoryEntrySchema = z.object({
   changedById: z.string().uuid(),
   changedAt: z.string().datetime(),
   reason: z.string().nullable(),
+  /** 変更を行った user の name (削除済 / null 関係で取得不能なら null) */
+  changedByName: z.string().nullable(),
 });
 export type ProjectStatusHistoryEntry = z.infer<typeof ProjectStatusHistoryEntrySchema>;
+
+export const ProjectStatusHistoryResponseSchema = z.object({
+  items: z.array(ProjectStatusHistoryEntrySchema),
+  total: z.number().int().nonnegative(),
+});
+export type ProjectStatusHistoryResponse = z.infer<typeof ProjectStatusHistoryResponseSchema>;

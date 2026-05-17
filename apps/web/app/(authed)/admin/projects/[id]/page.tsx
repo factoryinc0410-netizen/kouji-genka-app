@@ -3,13 +3,17 @@
 import type { Customer, Project, PublicUser } from '@kgk/schemas';
 import Link from 'next/link';
 import { use, useCallback, useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { ProjectStatusBadge } from '@/components/ui/project-status-badge';
 import { ApiError } from '@/lib/api/client';
 import { listCustomers } from '@/lib/api/customers';
 import { getProject } from '@/lib/api/projects';
 import { listUsers } from '@/lib/api/users';
 import { formatAmount } from '@/lib/format';
-import { CONSTRUCTION_TYPE_LABELS, PROJECT_STATUS_LABELS, PROJECT_TYPE_LABELS } from '@/lib/labels';
+import { CONSTRUCTION_TYPE_LABELS, PROJECT_TYPE_LABELS } from '@/lib/labels';
 import { PermissionsSection } from './PermissionsSection';
+import { ProjectStatusActions } from './ProjectStatusActions';
+import { ProjectStatusHistoryDrawer } from './ProjectStatusHistoryDrawer';
 
 /**
  * 工事詳細ページ (admin 専用)。
@@ -29,6 +33,7 @@ export default function AdminProjectDetailPage({
   const [users, setUsers] = useState<PublicUser[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -80,11 +85,27 @@ export default function AdminProjectDetailPage({
         <Link href="/admin/projects" className="text-sm text-muted-foreground hover:underline">
           ← 工事管理に戻る
         </Link>
-        <div className="mt-2 flex items-end justify-between gap-4">
-          <h1 className="text-2xl font-semibold">
-            <span className="mr-3 font-mono text-base text-muted-foreground">{project.code}</span>
-            {project.name}
-          </h1>
+        <div className="mt-2 flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold">
+              <span className="mr-3 font-mono text-base text-muted-foreground">{project.code}</span>
+              {project.name}
+            </h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <ProjectStatusBadge status={project.status} />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setHistoryOpen(true)}
+                data-testid="project-status-history-button"
+                aria-label="ステータス変遷履歴"
+              >
+                履歴
+              </Button>
+              <ProjectStatusActions project={project} onRefresh={refresh} />
+            </div>
+          </div>
           <Link
             href={`/admin/projects/${project.id}/budget`}
             className="inline-flex h-8 items-center rounded-md border border-input bg-background px-3 text-sm hover:bg-muted"
@@ -94,11 +115,19 @@ export default function AdminProjectDetailPage({
         </div>
       </div>
 
+      <ProjectStatusHistoryDrawer
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        projectId={project.id}
+      />
+
       <section className="rounded-md border bg-card p-6">
         <h2 className="mb-4 text-base font-semibold">基本情報</h2>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <Field label="取引先">{customer ? `${customer.code} — ${customer.name}` : '—'}</Field>
-          <Field label="ステータス">{PROJECT_STATUS_LABELS[project.status]}</Field>
+          <Field label="ステータス">
+            <ProjectStatusBadge status={project.status} size="xs" />
+          </Field>
           <Field label="工事区分">{PROJECT_TYPE_LABELS[project.projectType]}</Field>
           <Field label="構造種別">{CONSTRUCTION_TYPE_LABELS[project.constructionType]}</Field>
           <Field label="着工日">{project.startDate ?? '—'}</Field>

@@ -37,6 +37,11 @@ function build() {
       update: vi.fn(),
       aggregate: vi.fn(),
     },
+    // T34: ensureProjectAllowsAction 用。デフォルトは in_progress (= 全 action 許可)。
+    // PROJECT_NOT_EDITABLE をテストする場合は mockResolvedValueOnce で status を差替え。
+    project: {
+      findFirst: vi.fn().mockResolvedValue({ status: 'in_progress' }),
+    },
   } as unknown as PrismaService;
   const audit = { log: vi.fn().mockResolvedValue(undefined) } as unknown as AuditService;
   return { service: new BudgetsService(prisma, audit), prisma, audit };
@@ -203,6 +208,79 @@ describe('BudgetsService.update', () => {
     await expect(
       service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  // -------------------------------------------------------------------
+  // T34: ensureProjectAllowsAction によるガード
+  // -------------------------------------------------------------------
+  it.each([
+    'completed',
+    'billing',
+    'closed',
+  ] as const)('project.status=%s なら 422 PROJECT_NOT_EDITABLE (update)', async (status) => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValueOnce({ status } as never);
+    await expect(
+      service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
+    ).rejects.toMatchObject({ response: { code: 'PROJECT_NOT_EDITABLE' } });
+    // ガードで落ちるので budget の findFirst は呼ばれない
+    expect(prisma.budget.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('project が論理削除済 → 404 NOT_FOUND (update)', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValueOnce(null);
+    await expect(
+      service.update(projectId, budgetId, { lockVersion: 0, title: 'x' }, actorId, ctx),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+// =====================================================================
+// T34: workflow / revise ガード
+// =====================================================================
+describe('BudgetsService — T34 project-status guards', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    'billing',
+    'closed',
+  ] as const)('project.status=%s では submit (workflow) も 422 PROJECT_NOT_EDITABLE', async (status) => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValueOnce({ status } as never);
+    await expect(service.submit(projectId, budgetId, 0, actorId, ctx)).rejects.toMatchObject({
+      response: { code: 'PROJECT_NOT_EDITABLE' },
+    });
+  });
+
+  it('project.status=completed では submit/approve/reject は許可される (workflow OK)', async () => {
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValue({ status: 'completed' } as never);
+    vi.mocked(prisma.budget.findFirst).mockResolvedValue({
+      ...seedBudget,
+      status: 'pending_approval',
+    } as never);
+    vi.mocked(prisma.budget.update).mockResolvedValue({
+      ...seedBudget,
+      status: 'approved',
+      lockVersion: 1,
+    } as never);
+    // PROJECT_NOT_EDITABLE で reject されないこと (= 通過する)
+    await expect(service.approve(projectId, budgetId, 0, actorId, ctx)).resolves.toBeDefined();
+  });
+
+  it.each([
+    'completed',
+    'billing',
+    'closed',
+  ] as const)('project.status=%s では revise も 422 PROJECT_NOT_EDITABLE', async (status) => {
+    // revise は buildWithTx を使うが、ensureProjectAllowsAction は $transaction の外で
+    // prisma.project.findFirst を直接見る。新しい build を使えば OK。
+    const { service, prisma } = build();
+    vi.mocked(prisma.project.findFirst).mockResolvedValueOnce({ status } as never);
+    await expect(service.revise(projectId, budgetId, 0, actorId, ctx)).rejects.toMatchObject({
+      response: { code: 'PROJECT_NOT_EDITABLE' },
+    });
   });
 });
 
@@ -386,6 +464,8 @@ describe('BudgetsService.revise (approved → superseded + 新 draft v+1)', () =
     type Tx = typeof tx;
     const prisma = {
       $transaction: vi.fn(async (cb: (t: Tx) => unknown) => cb(tx)),
+      // T34: ensureProjectAllowsAction('revise') 用
+      project: { findFirst: vi.fn().mockResolvedValue({ status: 'in_progress' }) },
     } as unknown as PrismaService;
     const audit = { log: vi.fn().mockResolvedValue(undefined) } as unknown as AuditService;
     return { service: new BudgetsService(prisma, audit), prisma, audit, tx };

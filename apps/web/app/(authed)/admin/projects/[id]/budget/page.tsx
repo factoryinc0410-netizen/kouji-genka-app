@@ -1,12 +1,18 @@
 'use client';
 
-import type { Budget, BudgetItem, Project } from '@kgk/schemas';
+import {
+  type Budget,
+  type BudgetItem,
+  PROJECT_ALLOWS_BUDGET_EDIT,
+  type Project,
+} from '@kgk/schemas';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { getBudget, listBudgetItems, listBudgets } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 import { getProject } from '@/lib/api/projects';
+import { PROJECT_STATUS_LABELS } from '@/lib/labels';
 import { BudgetHeaderEditor } from './BudgetHeaderEditor';
 import { BudgetTreeTable } from './BudgetTreeTable';
 
@@ -117,12 +123,29 @@ export default function ProjectBudgetPage({
     <div className="space-y-4">
       <BackLink projectId={projectId} />
 
+      {/* T34: 工事ステータスが completed/billing/closed の時は予算編集をロック */}
+      {!PROJECT_ALLOWS_BUDGET_EDIT.has(project.status) ? (
+        <div
+          data-testid="budget-locked-banner"
+          className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+        >
+          <span aria-hidden="true">⚠️ </span>
+          この工事はステータスが「{PROJECT_STATUS_LABELS[project.status]}
+          」のため、予算の編集はできません。
+          {project.status === 'completed'
+            ? ' (申請/承認/差戻しは引き続き可能です)'
+            : ' (申請・承認・差戻し・改定もすべて停止しています)'}
+        </div>
+      ) : null}
+
       {currentBudget ? (
         <BudgetHeaderEditor
           project={project}
           budget={currentBudget}
           projectId={projectId}
-          editable={currentBudget.status === 'draft'}
+          editable={
+            currentBudget.status === 'draft' && PROJECT_ALLOWS_BUDGET_EDIT.has(project.status)
+          }
           budgets={budgets}
           onRefresh={() => refresh(currentBudget.id)}
           onSwitchBudget={(newId) => refresh(newId)}
@@ -145,7 +168,9 @@ export default function ProjectBudgetPage({
           items={items}
           onRefresh={() => refresh(currentBudget.id)}
           onItemUpdated={handleItemUpdated}
-          editable={currentBudget.status === 'draft'}
+          editable={
+            currentBudget.status === 'draft' && PROJECT_ALLOWS_BUDGET_EDIT.has(project.status)
+          }
         />
       )}
 
