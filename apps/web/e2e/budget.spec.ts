@@ -404,16 +404,26 @@ test.describe
       });
       // 「改定して新版を作成」は消える (新版は draft なので)
       await expect(page.getByRole('button', { name: '改定して新版を作成' })).toHaveCount(0);
-      // version 切替ボタン群に v1 (superseded) と v2 (draft) が並ぶ
-      await expect(page.getByRole('button', { name: /v1.*superseded/ })).toBeVisible();
-      await expect(page.getByRole('button', { name: /v2.*draft/ })).toBeVisible();
+      // バージョン切替 dropdown (T31) に v1 (旧版) と v2 (作成中) が並ぶ
+      await page.getByTestId('budget-version-switcher').click();
+      const versionList = page.getByTestId('budget-version-list');
+      await expect(versionList).toBeVisible({ timeout: 5_000 });
+      await expect(
+        versionList.locator('[data-testid="budget-version-item"][data-version="1"]'),
+      ).toBeVisible();
+      await expect(
+        versionList.locator('[data-testid="budget-version-item"][data-version="2"]'),
+      ).toBeVisible();
+      // 一旦閉じる (totalAmount 検証のため)
+      await page.keyboard.press('Escape');
       // totalAmount は v1 と同じ (items コピー成功)
       await expect(page.getByText('2,237,100 円')).toBeVisible();
       // 編集系 (「+ 科目を追加」) も復活
       await expect(page.getByRole('button', { name: '+ 科目を追加' })).toBeVisible();
 
       // --- 旧版 (v1, superseded) を表示 → 読取専用 ---
-      await page.getByRole('button', { name: /v1.*superseded/ }).click();
+      await page.getByTestId('budget-version-switcher').click();
+      await versionList.locator('[data-testid="budget-version-item"][data-version="1"]').click();
       // ワークフロー操作も編集操作も出ない
       await expect(page.getByRole('button', { name: '申請する' })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '改定して新版を作成' })).toHaveCount(0);
@@ -558,6 +568,70 @@ test.describe
       const rejectRow = drawer.locator('[data-event-type="reject"]');
       await expect(rejectRow).toHaveCount(1);
       await expect(rejectRow.getByTestId('budget-history-reason')).toHaveText(REJECT_COMMENT);
+
+      // --- 後始末 ---
+      resetBudgetToSeed('2026-001');
+    });
+
+    test('予算バージョン切替: dropdown で v1/v2 を切替できる (T31)', async ({ page }) => {
+      resetBudgetToSeed('2026-001');
+      page.on('dialog', (d) => d.accept());
+
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // --- v1 単独状態: switcher を開いて 1 件のみ表示、「現行」タグなし (approved なし) ---
+      const switcher = page.getByTestId('budget-version-switcher');
+      await switcher.click();
+      const list = page.getByTestId('budget-version-list');
+      await expect(list).toBeVisible({ timeout: 5_000 });
+      await expect(list.locator('[data-testid="budget-version-item"]')).toHaveCount(1);
+      // 現在表示中は v1
+      const v1Row = list.locator('[data-testid="budget-version-item"][data-version="1"]');
+      await expect(v1Row).toHaveAttribute('data-current', 'true');
+      // 「現行」タグは approved がまだ無いので 0 件
+      await expect(list.getByTestId('budget-version-live-tag')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+
+      // --- 申請 → 承認 → 改定 で v2 (draft) を作る ---
+      await page.getByRole('button', { name: '申請する' }).click();
+      await expect(page.getByRole('button', { name: '承認する' })).toBeVisible({ timeout: 10_000 });
+      await page.getByRole('button', { name: '承認する' }).click();
+      await expect(page.getByRole('button', { name: '改定して新版を作成' })).toBeVisible({
+        timeout: 10_000,
+      });
+      await page.getByRole('button', { name: '改定して新版を作成' }).click();
+      await expect(page.getByRole('button', { name: '申請する' })).toBeVisible({ timeout: 15_000 });
+
+      // --- v2 が表示中、switcher を開くと:
+      //     - v2 に ✓ (data-current=true)
+      //     - v1 に「現行」タグ (最新 approved) ---
+      await switcher.click();
+      await expect(list).toBeVisible({ timeout: 5_000 });
+      const v2Row = list.locator('[data-testid="budget-version-item"][data-version="2"]');
+      await expect(v2Row).toHaveAttribute('data-current', 'true');
+      await expect(v2Row).toHaveAttribute('data-live', 'false');
+      const v1RowAfter = list.locator('[data-testid="budget-version-item"][data-version="1"]');
+      await expect(v1RowAfter).toHaveAttribute('data-current', 'false');
+      await expect(v1RowAfter).toHaveAttribute('data-live', 'true');
+      // 「現行」タグは 1 つだけ (最新 approved の v1)
+      await expect(list.getByTestId('budget-version-live-tag')).toHaveCount(1);
+
+      // --- v1 をクリックで切替 → v1 が表示中 (read-only) ---
+      await v1RowAfter.click();
+      // 編集系は出ず、改定ボタンも出ない (v1 は superseded)
+      await expect(page.getByRole('button', { name: '+ 科目を追加' })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '改定して新版を作成' })).toHaveCount(0);
+      // 再度 switcher を開くと v1 に ✓
+      await switcher.click();
+      await expect(list).toBeVisible({ timeout: 5_000 });
+      await expect(
+        list.locator('[data-testid="budget-version-item"][data-version="1"]'),
+      ).toHaveAttribute('data-current', 'true');
 
       // --- 後始末 ---
       resetBudgetToSeed('2026-001');

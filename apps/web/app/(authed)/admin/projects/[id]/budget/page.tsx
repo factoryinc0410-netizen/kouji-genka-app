@@ -12,7 +12,7 @@ import { BudgetTreeTable } from './BudgetTreeTable';
 /**
  * 工事 × 予算ページ (admin).
  * MVP: 1 つの最新 Budget (status=draft 優先、なければ list[0]) をデフォルト表示する。
- * 複数 version の切替えは将来 (Tabs 等) で導入予定。
+ * バージョン切替は BudgetHeaderEditor 内の BudgetVersionSwitcher (dropdown) から行う (T31)。
  */
 export default function ProjectBudgetPage({
   params,
@@ -103,6 +103,7 @@ export default function ProjectBudgetPage({
           budget={currentBudget}
           projectId={projectId}
           editable={currentBudget.status === 'draft'}
+          budgets={budgets}
           onRefresh={() => refresh(currentBudget.id)}
           onSwitchBudget={(newId) => refresh(newId)}
         />
@@ -112,27 +113,6 @@ export default function ProjectBudgetPage({
           実行予算
         </h1>
       )}
-
-      {budgets.length > 1 ? (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-muted-foreground">version:</span>
-          {budgets.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              onClick={() => void refresh(b.id)}
-              className={
-                'rounded-md border px-2 py-1 ' +
-                (b.id === currentBudget?.id
-                  ? 'border-foreground bg-muted font-medium'
-                  : 'border-border hover:bg-muted')
-              }
-            >
-              v{b.version} ({b.status})
-            </button>
-          ))}
-        </div>
-      ) : null}
 
       {!currentBudget ? (
         <p className="rounded-md border bg-card px-4 py-3 text-sm text-muted-foreground">

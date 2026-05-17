@@ -11,6 +11,7 @@ import { BudgetExportButton } from './BudgetExportButton';
 import { BudgetHeaderDialog } from './BudgetHeaderDialog';
 import { BudgetHistoryButton } from './BudgetHistoryButton';
 import { BudgetHistoryDrawer } from './BudgetHistoryDrawer';
+import { BudgetVersionSwitcher } from './BudgetVersionSwitcher';
 import { BudgetWorkflowActions } from './BudgetWorkflowActions';
 
 /**
@@ -26,8 +27,10 @@ interface Props {
   budget: Budget;
   projectId: string;
   editable: boolean;
+  /** バージョン切替 dropdown 用。listBudgets の version desc を維持して渡す */
+  budgets: Budget[];
   onRefresh: () => Promise<void> | void;
-  /** 改定 (revise) 成功時に新 budget の id へ表示を切替えるためのコールバック */
+  /** 改定 (revise) / バージョン切替時に表示する budget の id を切替えるためのコールバック */
   onSwitchBudget: (newBudgetId: string) => Promise<void> | void;
 }
 
@@ -36,6 +39,7 @@ export function BudgetHeaderEditor({
   budget,
   projectId,
   editable,
+  budgets,
   onRefresh,
   onSwitchBudget,
 }: Props): React.ReactElement {
@@ -117,21 +121,22 @@ export function BudgetHeaderEditor({
               onCommit={commitTitle}
             />
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            version {budget.version} ／ status: <span className="font-medium">{budget.status}</span>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <BudgetVersionSwitcher
+              budgets={budgets}
+              currentBudgetId={budget.id}
+              onSelect={onSwitchBudget}
+            />
             {editable ? (
-              <>
-                {' ／ '}
-                <button
-                  type="button"
-                  onClick={() => setDialogOpen(true)}
-                  className="text-foreground underline-offset-2 hover:underline"
-                >
-                  備考を編集
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={() => setDialogOpen(true)}
+                className="text-foreground underline-offset-2 hover:underline"
+              >
+                備考を編集
+              </button>
             ) : null}
-          </p>
+          </div>
         </div>
 
         <div className="flex flex-col items-end gap-2">
