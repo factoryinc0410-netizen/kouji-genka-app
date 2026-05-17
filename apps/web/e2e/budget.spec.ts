@@ -87,7 +87,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByRole('heading', { name: /実行予算/ })).toBeVisible();
 
       // 初期 totalAmount = 2,237,100
@@ -149,7 +149,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
 
       // 初期 totalAmount を覚えておく (= 2,237,100)
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
@@ -199,7 +199,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       const d111Row = page.locator('tr', { hasText: '1-1-1' });
@@ -300,7 +300,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // --- インライン編集: 予算タイトル ---
@@ -370,7 +370,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // 初期 draft: 「申請する」+「+ 科目を追加」が表示されている
@@ -440,7 +440,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // 初期 draft
@@ -474,7 +474,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // ボタンが常時表示 (status=draft でも、その他でも)
@@ -503,7 +503,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // --- 申請 → 承認 ---
@@ -547,7 +547,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // --- 申請 → 差戻し (コメント付) ---
@@ -581,7 +581,7 @@ test.describe
       await page.getByRole('link', { name: '工事管理' }).click();
       await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
       await page.getByRole('link', { name: '実行予算を開く →' }).click();
-      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget(?:\?.*)?$/);
       await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
 
       // --- v1 単独状態: switcher を開いて 1 件のみ表示、「現行」タグなし (approved なし) ---
@@ -629,9 +629,15 @@ test.describe
       // 再度 switcher を開くと v1 に ✓
       await switcher.click();
       await expect(list).toBeVisible({ timeout: 5_000 });
-      await expect(
-        list.locator('[data-testid="budget-version-item"][data-version="1"]'),
-      ).toHaveAttribute('data-current', 'true');
+      const v1RowFinal = list.locator('[data-testid="budget-version-item"][data-version="1"]');
+      await expect(v1RowFinal).toHaveAttribute('data-current', 'true');
+
+      // --- URL 同期 (T37): `?v=<v1 の budget id>` が反映されている ---
+      // history.replaceState 経由のため Next の router を介さず、navigation も発生しない。
+      // URL から v= を取得し、switcher の v1 row が見せる UUID と一致することを確認。
+      const urlV = new URL(page.url()).searchParams.get('v');
+      expect(urlV).toMatch(/^[0-9a-f-]{36}$/);
+      // 切替直後はリロードなしで URL が更新されている (履歴は積まない = back で同ページに戻らない)
 
       // --- 後始末 ---
       resetBudgetToSeed('2026-001');

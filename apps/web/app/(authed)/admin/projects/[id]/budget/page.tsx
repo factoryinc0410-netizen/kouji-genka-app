@@ -2,7 +2,8 @@
 
 import type { Budget, BudgetItem, Project } from '@kgk/schemas';
 import Link from 'next/link';
-import { use, useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { getBudget, listBudgetItems, listBudgets } from '@/lib/api/budgets';
 import { ApiError } from '@/lib/api/client';
 import { getProject } from '@/lib/api/projects';
@@ -11,8 +12,15 @@ import { BudgetTreeTable } from './BudgetTreeTable';
 
 /**
  * 工事 × 予算ページ (admin).
- * MVP: 1 つの最新 Budget (status=draft 優先、なければ list[0]) をデフォルト表示する。
- * バージョン切替は BudgetHeaderEditor 内の BudgetVersionSwitcher (dropdown) から行う (T31)。
+ *
+ * 初期表示の優先順位 (T37):
+ *   1. URL クエリ `?v=<budgetId>` が指定されていて、その id が budgets に存在
+ *   2. status=draft の最新版
+ *   3. budgets[0] (= 最新 version)
+ *
+ * バージョン切替は BudgetHeaderEditor 内の BudgetVersionSwitcher (dropdown) から行い (T31)、
+ * 切替えた瞬間に `window.history.replaceState` で URL の `?v=` を書き換える (shallow:
+ * RSC payload を再フェッチしない / Next の loading.tsx を発火させない / 履歴は積まない)。
  */
 export default function ProjectBudgetPage({
   params,
@@ -20,6 +28,13 @@ export default function ProjectBudgetPage({
   params: Promise<{ id: string }>;
 }): React.ReactElement {
   const { id: projectId } = use(params);
+  const searchParams = useSearchParams();
+  /**
+   * 初回マウント時のみ参照する URL クエリ。以降の `?v=` 書換は
+   * window.history.replaceState で行うため、useSearchParams は更新を観測しない
+   * (これは意図通り — 副作用ループを避ける)。
+   */
+  const initialUrlBudgetId = useRef<string | null>(searchParams.get('v'));
 
   const [project, setProject] = useState<Project | null>(null);
   const [budgets, setBudgets] = useState<Budget[]>([]);
@@ -30,7 +45,11 @@ export default function ProjectBudgetPage({
 
   /**
    * 全体リロード: project + budget list + 選択中 budget の items を取り直す。
-   * 楽観ロック衝突や成功時に呼ばれる。
+   * 楽観ロック衝突や成功時、バージョン切替時に呼ばれる。
+   *
+   * pick が確定したら URL の `?v=` を pick.id に同期する (shallow)。指定された
+   * preferBudgetId が budgets に存在しなければ stale とみなし、pick (= デフォルト
+   * 選定結果) で URL を矯正する。
    */
   const refresh = useCallback(
     async (preferBudgetId?: string) => {
@@ -50,6 +69,7 @@ export default function ProjectBudgetPage({
           budgetsRes.items[0] ||
           null;
         setCurrentBudget(pick);
+        syncUrl(pick?.id ?? null);
 
         if (pick) {
           const tree = await listBudgetItems(projectId, pick.id);
@@ -70,7 +90,7 @@ export default function ProjectBudgetPage({
   );
 
   useEffect(() => {
-    void refresh();
+    void refresh(initialUrlBudgetId.current ?? undefined);
   }, [refresh]);
 
   // 1 件分の楽観的更新 (toast 後の手動リロードを待たず、PATCH 成功直後にローカル state を入替え)
@@ -148,4 +168,26 @@ function BackLink({ projectId }: { projectId: string }): React.ReactElement {
       ← 工事詳細に戻る
     </Link>
   );
+}
+
+/**
+ * URL クエリ `?v=<budgetId>` を shallow に書換える (T37)。
+ *
+ * - `window.history.replaceState` を使い、Next の router を介さない
+ *   → RSC payload 再フェッチも layout の loading.tsx 発火もしない
+ * - 履歴も積まない (replace) ので、戻るボタンで「同ページの別版」が並ばない
+ * - id が null の場合は `?v=` を削除 (budgets が空のとき)
+ */
+function syncUrl(budgetId: string | null): void {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  const current = url.searchParams.get('v');
+  if (budgetId) {
+    if (current === budgetId) return;
+    url.searchParams.set('v', budgetId);
+  } else {
+    if (current === null) return;
+    url.searchParams.delete('v');
+  }
+  window.history.replaceState(window.history.state, '', url.toString());
 }
