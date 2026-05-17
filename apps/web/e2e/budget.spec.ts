@@ -48,7 +48,16 @@ async function waitBudgetIdle(page: Page): Promise<void> {
  * で `kgk-postgres` に pin 済 (CI/local 共通)。
  */
 function resetBudgetToSeed(projectCode: string): void {
+  // 1) 当該 project に紐づく全 budget の audit_logs を削除 (T33: 履歴 timeline を冪等化)
+  //    entity_id は VARCHAR(100)、budget.id は UUID なので ::text にキャストして比較
+  // 2) v2 以降の budget_items と budget をハード削除
+  // 3) v1 を draft (lock_version+1) に戻す
   const sql = `
+    DELETE FROM audit_logs WHERE entity_type='budgets' AND entity_id IN (
+      SELECT b.id::text FROM budgets b
+      JOIN projects p ON p.id = b.project_id
+      WHERE p.code = '${projectCode}'
+    );
     DELETE FROM budget_items WHERE budget_id IN (
       SELECT b.id FROM budgets b
       JOIN projects p ON p.id = b.project_id
@@ -473,5 +482,84 @@ test.describe
       const path = await download.path();
       const stat = await fs.stat(path);
       expect(stat.size).toBeGreaterThan(1000);
+    });
+
+    test('予算ワークフロー履歴: 申請 → 承認 後に timeline に並ぶ (T33)', async ({ page }) => {
+      // テスト境界を整える: 過去テストで蓄積した audit_logs もクリア
+      resetBudgetToSeed('2026-001');
+      page.on('dialog', (d) => d.accept());
+
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // --- 申請 → 承認 ---
+      await page.getByRole('button', { name: '申請する' }).click();
+      await expect(page.getByRole('button', { name: '承認する' })).toBeVisible({ timeout: 10_000 });
+      await page.getByRole('button', { name: '承認する' }).click();
+      await expect(page.getByRole('button', { name: '改定して新版を作成' })).toBeVisible({
+        timeout: 10_000,
+      });
+
+      // --- 履歴ボタンで drawer を開く ---
+      await page.getByTestId('budget-history-button').click();
+      const drawer = page.getByTestId('budget-history-drawer');
+      await expect(drawer).toBeVisible({ timeout: 5_000 });
+
+      // timeline に submit と approve が並ぶ (create は seed 投入で audit が無い場合もあるので
+      // 必ず存在する 2 件のみ assert)
+      const submitRow = drawer.locator('[data-event-type="submit"]');
+      const approveRow = drawer.locator('[data-event-type="approve"]');
+      await expect(submitRow).toHaveCount(1);
+      await expect(approveRow).toHaveCount(1);
+
+      // 実行者名 (admin の name) が表示されている
+      await expect(submitRow).toContainText('が ');
+      await expect(approveRow).toContainText('が ');
+
+      // Esc で drawer が閉じる
+      await page.keyboard.press('Escape');
+      await expect(drawer).toBeHidden({ timeout: 5_000 });
+
+      // --- 後始末: pending/approved を draft に戻す ---
+      resetBudgetToSeed('2026-001');
+    });
+
+    test('予算ワークフロー履歴: 差戻し理由がタイムラインに表示される (T33)', async ({ page }) => {
+      resetBudgetToSeed('2026-001');
+      page.on('dialog', (d) => d.accept());
+      const REJECT_COMMENT = '単価の根拠資料を添付してから再申請してください';
+
+      await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+      await page.getByRole('link', { name: '工事管理' }).click();
+      await page.locator('tr', { hasText: '2026-001' }).getByRole('link', { name: '詳細' }).click();
+      await page.getByRole('link', { name: '実行予算を開く →' }).click();
+      await expect(page).toHaveURL(/\/admin\/projects\/[0-9a-f-]+\/budget$/);
+      await expect(page.getByText('2,237,100 円')).toBeVisible({ timeout: 10_000 });
+
+      // --- 申請 → 差戻し (コメント付) ---
+      await page.getByRole('button', { name: '申請する' }).click();
+      await expect(page.getByRole('button', { name: '差戻す' })).toBeVisible({ timeout: 10_000 });
+      await page.getByRole('button', { name: '差戻す' }).click();
+      const rejectDialog = page.getByRole('dialog');
+      await expect(rejectDialog).toBeVisible({ timeout: 5_000 });
+      await rejectDialog.locator('#br-comment').fill(REJECT_COMMENT);
+      await rejectDialog.getByRole('button', { name: '差戻す' }).click();
+      await expect(rejectDialog).toBeHidden({ timeout: 5_000 });
+      await expect(page.getByRole('button', { name: '申請する' })).toBeVisible({ timeout: 10_000 });
+
+      // --- 履歴 drawer を開いて reject 行に reason が見えること ---
+      await page.getByTestId('budget-history-button').click();
+      const drawer = page.getByTestId('budget-history-drawer');
+      await expect(drawer).toBeVisible({ timeout: 5_000 });
+      const rejectRow = drawer.locator('[data-event-type="reject"]');
+      await expect(rejectRow).toHaveCount(1);
+      await expect(rejectRow.getByTestId('budget-history-reason')).toHaveText(REJECT_COMMENT);
+
+      // --- 後始末 ---
+      resetBudgetToSeed('2026-001');
     });
   });

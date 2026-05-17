@@ -212,3 +212,58 @@ export type BudgetItemTreeResponse = z.infer<typeof BudgetItemTreeResponseSchema
 
 export const BudgetItemResponseSchema = z.object({ item: BudgetItemSchema });
 export type BudgetItemResponse = z.infer<typeof BudgetItemResponseSchema>;
+
+// ===================================================================
+// T33: ワークフロー履歴タイムライン
+// audit_logs を「業務的な節目」のみに正規化して時系列で返す。
+// DB スキーマは変更せず、`after.workflowAction` discriminator を読む。
+// ===================================================================
+
+/**
+ * 履歴イベント種別。
+ * - create      : 予算ヘッダ作成 (audit action=create, workflowAction なし)
+ * - submit      : 申請 (draft → pending_approval)
+ * - approve     : 承認 (pending_approval → approved)
+ * - reject      : 差戻し (pending_approval → draft)。reason に差戻しコメント
+ * - revise      : この予算が superseded された側のイベント。newBudgetId に新版 id
+ * - revise_from : この予算 (新 draft) が改定で生まれた側のイベント。sourceBudgetId に旧版 id
+ * - export      : Excel 出力
+ */
+export const BUDGET_HISTORY_EVENT_TYPES = [
+  'create',
+  'submit',
+  'approve',
+  'reject',
+  'revise',
+  'revise_from',
+  'export',
+] as const;
+export const BudgetHistoryEventTypeSchema = z.enum(BUDGET_HISTORY_EVENT_TYPES);
+export type BudgetHistoryEventType = z.infer<typeof BudgetHistoryEventTypeSchema>;
+
+export const BudgetHistoryEventSchema = z.object({
+  /** audit_logs.id は BigInt なので精度ロス防止に string */
+  id: z.string(),
+  occurredAt: z.string().datetime(),
+  eventType: BudgetHistoryEventTypeSchema,
+  actor: z.object({
+    id: z.string().uuid().nullable(),
+    /** ユーザが削除されている等で取得不可なら null */
+    name: z.string().nullable(),
+  }),
+  /** reject 時の差戻しコメント等 (任意) */
+  reason: z.string().nullable(),
+  /** revise_from イベントの「元の予算」 id */
+  sourceBudgetId: z.string().uuid().nullable(),
+  /** revise イベントの「次の予算」 id (旧版から見た新 draft) */
+  newBudgetId: z.string().uuid().nullable(),
+  /** version / status / format などの補助情報 */
+  meta: z.record(z.unknown()).nullable(),
+});
+export type BudgetHistoryEvent = z.infer<typeof BudgetHistoryEventSchema>;
+
+export const BudgetHistoryResponseSchema = z.object({
+  items: z.array(BudgetHistoryEventSchema),
+  total: z.number().int().nonnegative(),
+});
+export type BudgetHistoryResponse = z.infer<typeof BudgetHistoryResponseSchema>;

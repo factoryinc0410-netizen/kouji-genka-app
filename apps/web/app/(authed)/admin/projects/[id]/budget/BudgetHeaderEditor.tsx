@@ -9,6 +9,8 @@ import { ApiError } from '@/lib/api/client';
 import { formatAmount } from '@/lib/format';
 import { BudgetExportButton } from './BudgetExportButton';
 import { BudgetHeaderDialog } from './BudgetHeaderDialog';
+import { BudgetHistoryButton } from './BudgetHistoryButton';
+import { BudgetHistoryDrawer } from './BudgetHistoryDrawer';
 import { BudgetWorkflowActions } from './BudgetWorkflowActions';
 
 /**
@@ -39,6 +41,7 @@ export function BudgetHeaderEditor({
 }: Props): React.ReactElement {
   const toast = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const handleConflict = useCallback(() => {
     toast.show({
@@ -132,8 +135,11 @@ export function BudgetHeaderEditor({
         </div>
 
         <div className="flex flex-col items-end gap-2">
-          {/* Excel 出力は status 不問で常時表示 (記録目的) */}
-          <BudgetExportButton projectId={projectId} budgetId={budget.id} />
+          {/* Excel 出力 / 履歴は status 不問で常時表示 (記録目的) */}
+          <div className="flex items-center gap-2">
+            <BudgetHistoryButton onOpen={() => setHistoryOpen(true)} />
+            <BudgetExportButton projectId={projectId} budgetId={budget.id} />
+          </div>
           <div className="text-right">
             <div className="text-xs text-muted-foreground">合計</div>
             <div className="text-xl font-semibold tabular-nums">
@@ -148,6 +154,14 @@ export function BudgetHeaderEditor({
           />
         </div>
       </div>
+
+      <BudgetHistoryDrawer
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        projectId={projectId}
+        budgetId={budget.id}
+        onJumpBudget={onSwitchBudget}
+      />
 
       {budget.notes ? (
         <p

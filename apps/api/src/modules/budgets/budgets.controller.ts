@@ -45,6 +45,7 @@ import { ProjectAccessGuard } from '../auth/project-access.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { BudgetExportService } from './budget-export.service';
+import { BudgetHistoryService } from './budget-history.service';
 import { BudgetItemsService } from './budget-items.service';
 import { BudgetsService } from './budgets.service';
 
@@ -70,6 +71,7 @@ export class BudgetsController {
   constructor(
     private readonly budgets: BudgetsService,
     private readonly exportService: BudgetExportService,
+    private readonly historyService: BudgetHistoryService,
   ) {}
 
   @Get()
@@ -120,6 +122,21 @@ export class BudgetsController {
     );
     res.setHeader('Content-Length', buffer.byteLength.toString());
     return new StreamableFile(buffer);
+  }
+
+  /**
+   * ワークフロー履歴タイムライン (T33)
+   * audit_logs から create / submit / approve / reject / revise / revise_from / export を
+   * 業務的節目として抽出。閲覧は view 権限のみ (status 不問)。
+   */
+  @Get(':budgetId/history')
+  @RequireProjectAccess('view')
+  async history(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+  ) {
+    const items = await this.historyService.listHistory(projectId, budgetId);
+    return { items, total: items.length };
   }
 
   @Post()

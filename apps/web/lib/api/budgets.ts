@@ -1,5 +1,6 @@
 import type {
   Budget,
+  BudgetHistoryResponse,
   BudgetItem,
   BudgetItemTreeResponse,
   BudgetResponse,
@@ -193,6 +194,19 @@ function parseFilename(header: string | null): string {
   // filename="..."
   const ascii = header.match(/filename\s*=\s*"?([^";]+)"?/i);
   return ascii?.[1] ?? 'budget.xlsx';
+}
+
+// ---- T33: ワークフロー履歴 ----
+
+/**
+ * ワークフロー履歴タイムラインを取得。
+ * 業務的節目 (create / submit / approve / reject / revise / revise_from / export) のみ返る。
+ */
+export function getBudgetHistory(
+  projectId: string,
+  budgetId: string,
+): Promise<BudgetHistoryResponse> {
+  return apiFetch<BudgetHistoryResponse>(`${root(projectId)}/${budgetId}/history`);
 }
 
 export type { Budget };
