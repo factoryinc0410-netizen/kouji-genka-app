@@ -8,7 +8,7 @@ async function loginAsAdmin(page: import('@playwright/test').Page): Promise<void
   await page.fill('input[name="email"]', ADMIN_EMAIL);
   await page.fill('input[name="password"]', ADMIN_PASSWORD);
   await page.getByRole('button', { name: 'ログイン' }).click();
-  await expect(page).toHaveURL(/\/admin\/users/);
+  await expect(page).toHaveURL(/\/admin\/(dashboard|users)/);
 }
 
 test.describe

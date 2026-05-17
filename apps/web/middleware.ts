@@ -17,7 +17,8 @@ export function middleware(req: NextRequest): NextResponse {
 
   if (isPublic && sid && pathname === '/login') {
     const url = req.nextUrl.clone();
-    url.pathname = '/admin/users';
+    // T35: ログイン後の初期遷移は管制塔ダッシュボード。
+    url.pathname = '/admin/dashboard';
     url.searchParams.delete('next');
     return NextResponse.redirect(url);
   }

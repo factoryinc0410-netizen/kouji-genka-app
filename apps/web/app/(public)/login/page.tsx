@@ -21,7 +21,8 @@ export default function LoginPage(): React.ReactElement {
 function LoginForm(): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get('next') ?? '/admin/users';
+  // T35: ログイン後の初期遷移は管制塔ダッシュボード。
+  const next = params.get('next') ?? '/admin/dashboard';
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 

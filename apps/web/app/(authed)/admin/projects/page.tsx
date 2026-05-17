@@ -1,8 +1,9 @@
 'use client';
 
-import type { Project } from '@kgk/schemas';
+import { PROJECT_STATUSES, type Project, type ProjectStatus } from '@kgk/schemas';
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api/client';
 import { deleteProject, listProjects } from '@/lib/api/projects';
@@ -10,7 +11,28 @@ import { formatAmount } from '@/lib/format';
 import { CONSTRUCTION_TYPE_LABELS, PROJECT_STATUS_LABELS, PROJECT_TYPE_LABELS } from '@/lib/labels';
 import { ProjectFormDialog } from './ProjectFormDialog';
 
+function isProjectStatus(v: string | null): v is ProjectStatus {
+  return v !== null && (PROJECT_STATUSES as readonly string[]).includes(v);
+}
+
+/**
+ * T35: useSearchParams を使う子コンポーネントを Suspense でラップしておく
+ * (Next 15 で client component + static route の組合せでビルドが落ちる回避)。
+ */
 export default function AdminProjectsPage(): React.ReactElement {
+  return (
+    <Suspense fallback={<p className="text-sm text-muted-foreground">読み込み中…</p>}>
+      <AdminProjectsPageInner />
+    </Suspense>
+  );
+}
+
+function AdminProjectsPageInner(): React.ReactElement {
+  const searchParams = useSearchParams();
+  // T35: ダッシュボードのステータスカードから `?status=...` でフィルタ可能。
+  const statusFilter = searchParams.get('status');
+  const status = isProjectStatus(statusFilter) ? statusFilter : undefined;
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -21,14 +43,14 @@ export default function AdminProjectsPage(): React.ReactElement {
     setLoading(true);
     setError(null);
     try {
-      const res = await listProjects({ limit: 200 });
+      const res = await listProjects({ limit: 200, status });
       setProjects(res.items);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '工事一覧の取得に失敗しました');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [status]);
 
   useEffect(() => {
     void refresh();

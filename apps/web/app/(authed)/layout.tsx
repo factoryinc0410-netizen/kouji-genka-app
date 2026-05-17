@@ -34,7 +34,7 @@ export default function AuthedLayout({
     <ToastProvider>
       <div className="flex min-h-screen flex-col">
         <header className="flex items-center justify-between border-b bg-card px-6 py-3">
-          <Link href="/admin/users" className="text-lg font-semibold">
+          <Link href="/admin/dashboard" className="text-lg font-semibold">
             kouji-genka
           </Link>
           <div className="flex items-center gap-4">
@@ -47,6 +47,7 @@ export default function AuthedLayout({
         <div className="flex flex-1">
           <aside className="w-56 border-r bg-card p-4">
             <nav className="space-y-1 text-sm">
+              <SidebarLink href="/admin/dashboard">ダッシュボード</SidebarLink>
               <SidebarLink href="/projects">工事一覧</SidebarLink>
               <SidebarLink href="/admin/projects">工事管理</SidebarLink>
               <SidebarLink href="/admin/customers">取引先管理</SidebarLink>

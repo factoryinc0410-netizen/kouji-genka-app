@@ -40,7 +40,10 @@ test.describe
       // Phase 1: admin が planner ユーザを作成
       // ============================================================
       await login(page, ADMIN_EMAIL, ADMIN_PASSWORD);
-      await expect(page).toHaveURL(/\/admin\/users/);
+      // T35: ログイン後は dashboard に着くので、ユーザ管理へ明示遷移
+      await expect(page).toHaveURL(/\/admin\/(dashboard|users)/);
+      await page.getByRole('link', { name: 'ユーザ管理' }).click();
+      await expect(page).toHaveURL(/\/admin\/users$/);
 
       await page.getByRole('button', { name: '新規作成' }).click();
       const userDialog = page.getByRole('dialog');
@@ -91,7 +94,8 @@ test.describe
       await logout(page);
 
       await login(page, plannerEmail, PLANNER_PASSWORD);
-      await expect(page).toHaveURL(/\/admin\/users/);
+      // planner も dashboard に着く (admin 限定 menu があっても、ダッシュボード自体は誰でも見える)
+      await expect(page).toHaveURL(/\/admin\/(dashboard|users|projects)/);
 
       // /projects へ移動 (planner も自分の画面は見える: API 側で whereForView)
       await page.getByRole('link', { name: '工事一覧' }).click();

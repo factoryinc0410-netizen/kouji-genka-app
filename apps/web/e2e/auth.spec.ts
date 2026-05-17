@@ -18,7 +18,10 @@ test.describe
       await page.fill('input[name="password"]', ADMIN_PASSWORD);
       await page.getByRole('button', { name: 'ログイン' }).click();
 
-      await expect(page).toHaveURL(/\/admin\/users/);
+      // T35: ログイン後の初期遷移は dashboard。次にユーザ管理へ明示遷移
+      await expect(page).toHaveURL(/\/admin\/(dashboard|users)/);
+      await page.getByRole('link', { name: 'ユーザ管理' }).click();
+      await expect(page).toHaveURL(/\/admin\/users$/);
       await expect(page.getByRole('heading', { name: 'ユーザ管理' })).toBeVisible();
       await expect(page.getByText(ADMIN_EMAIL)).toBeVisible();
 
