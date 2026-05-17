@@ -41,7 +41,14 @@ async function bootstrap(): Promise<void> {
       cookie: {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        // SSO 統合 (ADR-003) のために 'lax' を使用する。
+        // 'strict' だと Factoryskills (別 origin) → KGK の cross-site redirect
+        // チェーン経由で Set-Cookie が届いても、その後の top-level navigation
+        // で送信されず、即 /login に飛ばされてしまう (= login スキップ失敗)。
+        // 'lax' は OAuth/SSO で標準的な設定で、top-level GET navigation では
+        // cross-site でも cookie を送信する。POST やリソース読み込み (img/iframe)
+        // は依然として same-site のみで保護される。
+        sameSite: 'lax',
         maxAge: 1000 * 60 * 60 * 8,
       },
     }),
