@@ -1,0 +1,100 @@
+# ================================================================
+#  kouji-genka API (NestJS) - systemd unit
+#  配置先: /etc/systemd/system/kouji-genka-api.service
+#
+#  前提:
+#    - アプリ配置先 : /opt/kouji-genka
+#    - 実行ユーザー : kouji-genka (専用一般ユーザー、Factoryskills とは別)
+#    - 実行グループ : kouji-genka
+#    - .env         : /opt/kouji-genka/.env
+#    - dist         : /opt/kouji-genka/apps/api/dist/main.js
+#    - Node         : 22 (システム /usr/bin/node もしくは nvm 配下)
+#    - DB / Redis   : Docker Compose (kgk-postgres / kgk-redis、127.0.0.1 バインド)
+#
+#  インストール:
+#    sudo cp infra/systemd/kouji-genka-api.service /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable kouji-genka-api
+#    sudo systemctl start  kouji-genka-api
+#
+#  状態確認:
+#    sudo systemctl status kouji-genka-api
+#    sudo journalctl -u kouji-genka-api -f
+#
+#  注意:
+#    - Factoryskills の systemd unit (factoryskills.service, port 8000) とは完全に独立。
+#      共存可能、停止/再起動も相互非依存。
+#    - DB / Redis は Docker Compose で常駐させる前提。docker.service が落ちると
+#      本サービスは起動できないため、After=docker.service を指定している。
+#    - NestJS は単一プロセスで動かす想定 (BullMQ ワーカーは別プロセスにする場合
+#      kouji-genka-worker.service を追加で作成すること)。
+# ================================================================
+
+[Unit]
+Description=kouji-genka API server (NestJS, port 3001)
+Documentation=https://github.com/factoryinc0410-netizen/kouji-genka-app
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+
+# ── 実行ユーザー / 作業ディレクトリ ──
+User=kouji-genka
+Group=kouji-genka
+WorkingDirectory=/opt/kouji-genka/apps/api
+
+# ── 環境変数 ──
+# .env は infra/.env.example を雛形にして本番値で上書きしたもの。
+# COOKIE_SECRET / AUTH_SECRET / POSTGRES_PASSWORD は必ず本番固有の強い値に。
+EnvironmentFile=/opt/kouji-genka/.env
+Environment="NODE_ENV=production"
+Environment="API_PORT=3001"
+
+# ── 起動コマンド ──
+# pnpm 経由ではなく node を直接呼ぶ (PATH 解決依存を排除、起動オーバーヘッドも最小)。
+# Node 22 をシステム位置にインストールしている前提。nvm 配下を使う場合はフルパスを書く。
+ExecStart=/usr/bin/node /opt/kouji-genka/apps/api/dist/main.js
+
+# ── 停止 ──
+# 終了時は SIGTERM → 30 秒待機 → SIGKILL
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ── 自動復旧 (運用要件) ──
+# 異常終了でもプロセスダウンでも常に再起動する。RestartSec=5s で安定化を待つ。
+# (Factoryskills の on-failure より積極的: SIGKILL されても起動し直す)
+Restart=always
+RestartSec=5s
+# 5 分間に 10 回失敗したら停止 (ループ防止)
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# ── ログ ──
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kouji-genka-api
+
+# ── セキュリティ強化 (Factoryskills の設定に揃える) ──
+# /opt/kouji-genka 以外への書き込みを禁止し、攻撃面を狭める。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Prisma migration や ログ書き出しに必要なら以下を有効化:
+# ReadWritePaths=/opt/kouji-genka/apps/api/logs
+
+# ── リソース制限 (任意) ──
+# NestJS + Prisma + Pino で常時 200-400MB 程度。Excel/PDF 生成同時実行で増える。
+# MemoryMax=1G
+# CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

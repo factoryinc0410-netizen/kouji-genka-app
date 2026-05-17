@@ -1,0 +1,100 @@
+# ================================================================
+#  kouji-genka Web (Next.js) - systemd unit
+#  配置先: /etc/systemd/system/kouji-genka-web.service
+#
+#  前提:
+#    - アプリ配置先 : /opt/kouji-genka
+#    - 実行ユーザー : kouji-genka (専用一般ユーザー、Factoryskills とは別)
+#    - 実行グループ : kouji-genka
+#    - .env         : /opt/kouji-genka/.env
+#    - build 済み   : /opt/kouji-genka/apps/web/.next/ (pnpm --filter @kgk/web build 済み)
+#    - Node 22 + pnpm が PATH 上にあること
+#    - API         : kouji-genka-api.service (port 3001) が稼働中
+#
+#  インストール:
+#    sudo cp infra/systemd/kouji-genka-web.service /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable kouji-genka-web
+#    sudo systemctl start  kouji-genka-web
+#
+#  状態確認:
+#    sudo systemctl status kouji-genka-web
+#    sudo journalctl -u kouji-genka-web -f
+#
+#  注意:
+#    - サブパス公開 (/kgk/) の場合は .env に NEXT_PUBLIC_BASE_PATH=/kgk を設定し、
+#      ビルド時にも同じ環境変数を与えて next build を実行しておくこと
+#      (basePath は build 時に各 asset の URL に焼き込まれる)。
+#    - API が起動していなくても Next.js は立ち上がる (起動後の HTTP 呼び出しが失敗するだけ)
+#      が、Wants= で起動順序を表明し、安定運用のため kouji-genka-api を先に起こす。
+#    - pnpm を使わず直接 next start を呼ぶ代替案:
+#        ExecStart=/usr/bin/node /opt/kouji-genka/node_modules/next/dist/bin/next start -p 3000
+#      ※ こちらのほうが PATH 依存がなく堅牢。pnpm 経由は logging / hook が要るときに採用。
+# ================================================================
+
+[Unit]
+Description=kouji-genka Web server (Next.js 15, port 3000)
+Documentation=https://github.com/factoryinc0410-netizen/kouji-genka-app
+After=network-online.target kouji-genka-api.service
+Wants=network-online.target kouji-genka-api.service
+
+[Service]
+Type=simple
+
+# ── 実行ユーザー / 作業ディレクトリ ──
+User=kouji-genka
+Group=kouji-genka
+WorkingDirectory=/opt/kouji-genka/apps/web
+
+# ── 環境変数 ──
+EnvironmentFile=/opt/kouji-genka/.env
+Environment="NODE_ENV=production"
+Environment="PORT=3000"
+# pnpm / node を PATH で見つけられるよう明示。nvm を使う場合はそのパスを足す。
+# (本番では nvm を使わずシステム /usr/bin/node + corepack 経由が無難)
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# サブパス公開時はここを有効化 (build 時にも同じ値で next build しておくこと):
+# Environment="NEXT_PUBLIC_BASE_PATH=/kgk"
+
+# ── 起動コマンド ──
+# pnpm start = "next start -p 3000" (apps/web/package.json で定義)
+# pnpm が見えない場合は corepack enable で系列を pin する:
+#   sudo corepack enable && sudo corepack prepare pnpm@11.1.2 --activate
+ExecStart=/usr/bin/env pnpm start
+
+# ── 停止 ──
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ── 自動復旧 (運用要件) ──
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# ── ログ ──
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kouji-genka-web
+
+# ── セキュリティ強化 (Factoryskills の設定に揃える) ──
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Next.js は .next/cache に書き込むため必要に応じて開放する:
+# ReadWritePaths=/opt/kouji-genka/apps/web/.next/cache
+
+# ── リソース制限 (任意) ──
+# Next.js 15 (Turbopack) + RSC streaming で常時 300-500MB 程度。
+# MemoryMax=1G
+# CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target
