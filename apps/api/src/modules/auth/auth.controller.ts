@@ -32,6 +32,24 @@ export class AuthController {
     return { user };
   }
 
+  /**
+   * SSO チケット交換 (ADR-003)。Next.js の callback ハンドラから呼ばれる想定。
+   * 成功時は AuthService.exchangeSsoTicket がユーザを upsert して PublicUser を返し、
+   * ここで session を regenerate + userId をセットして Set-Cookie を返す。
+   */
+  @Post('sso/exchange')
+  @HttpCode(HttpStatus.OK)
+  async ssoExchange(@Body() body: { ticket?: string }, @Req() req: Request) {
+    const ticket = (body?.ticket ?? '').trim();
+    if (!ticket) {
+      throw new UnauthenticatedException();
+    }
+    const user = await this.auth.exchangeSsoTicket(ticket, contextFromReq(req));
+    await regenerateSession(req);
+    req.session.userId = user.id;
+    return { user };
+  }
+
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(AuthGuard)
